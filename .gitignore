@@ -1,0 +1,22 @@
+# Environments
+.env
+.envrc
+.venv
+env/
+venv/
+ENV/
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local repost state / exports
+src/exports/
+
+# IDE
+.vscode/
+.idea/
