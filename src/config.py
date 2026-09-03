@@ -47,3 +47,15 @@ SNAPCHAT_OAUTH_SCOPES = "snapchat-marketing-api snapchat-profile-api"
 SNAPCHAT_REFRESH_TOKEN = os.environ["SNAPCHAT_REFRESH_TOKEN"]
 SNAPCHAT_PROFILE_ID = os.environ["SNAPCHAT_PROFILE_ID"]
 SNAPCHAT_TOKEN_URL = "https://accounts.snapchat.com/login/oauth2/access_token"
+
+# streamlit-authenticator config (usernames, bcrypt-hashed passwords, cookie
+# settings) for streamlit_app.py, stored as a single YAML secret in Key Vault
+# rather than in git - see login.py and auth_config/. Fetched lazily (not at
+# import time like the secrets above) since it doesn't exist yet on a brand
+# new environment until auth_config/init_config.py bootstraps it, and the CLI
+# scripts that also import this module don't need it.
+STREAMLIT_AUTH_CONFIG_SECRET_NAME = "SnapchatStreamlitAuthConfig"
+
+
+def get_streamlit_auth_config_yaml() -> str:
+    return secret_client.get_secret(STREAMLIT_AUTH_CONFIG_SECRET_NAME).value
