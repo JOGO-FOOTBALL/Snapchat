@@ -55,7 +55,7 @@ under `src/exports/` (one log file per page) so already-posted items show
 ### 2. Automatic - Reels autopublish (`src/Snapchat_Reels_Autopublish.py`)
 
 A standalone script meant to be triggered every ~10 minutes by an external
-scheduler (cron, Windows Task Scheduler, Airflow, a k8s CronJob, ...). Each
+scheduler (Airflow). Each
 run:
 
 - Scans Instagram for Reels posted in the last `--lookback-minutes` (default
