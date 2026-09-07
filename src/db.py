@@ -60,7 +60,10 @@ def _filter_live_media_url(rows: list[dict]) -> list[dict]:
 # DB itself is hit.
 @st.cache_data(ttl="5m", show_spinner=False)
 def fetch_recent_instagram_stories(ig_user_id: int, lookback_hours: int) -> list[dict]:
-    """Newest-first. Skips rows with no media_url (the scraper occasionally
+    """Oldest-first, so the Stories publisher page's card order (and, since
+    render_db_browser_page selects/publishes in that same order, the order
+    Snaps get posted in) matches the order the Stories were actually posted
+    on Instagram. Skips rows with no media_url (the scraper occasionally
     misses it, same class of gap as the Graph API's own media_url bug)."""
     conn = _get_connection()
     try:
@@ -72,7 +75,7 @@ def fetch_recent_instagram_stories(ig_user_id: int, lookback_hours: int) -> list
                 WHERE ig_user_id = %s
                   AND timestamp_utc > (now() AT TIME ZONE 'utc') - (%s || ' hours')::interval
                   AND media_url IS NOT NULL
-                ORDER BY timestamp_utc DESC
+                ORDER BY timestamp_utc ASC
                 """,
                 (ig_user_id, lookback_hours),
             )
