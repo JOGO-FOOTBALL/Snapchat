@@ -18,9 +18,8 @@ Snapchat_Repost.py) - a Reel that isn't postable yet just gets picked up again
 on a later run within the window, instead of being skipped forever.
 
 State (which Instagram post_ids have been published/given up on) is tracked in
-a local JSON file (exports/snapchat_reels_autopublish_state.json), separate
-from Snapchat_Repost.py's own state file since these are two independent
-publishing flows.
+the snapchat.publish_log Postgres table (source='auto_reels'), shared with the
+Streamlit publisher pages to prevent cross-flow duplicates.
 
 Usage:
     python src/Snapchat_Reels_Autopublish.py                  # one pass, publish new Reels
@@ -29,12 +28,12 @@ Usage:
 """
 
 import argparse
-import json
 import logging
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from config import ACCOUNT_CHANNEL
+from db import get_connection
+from publish_helpers import AlreadyPublishedError, publish_lock
 from Snapchat_Repost import (
     FIELDS,
     LIMIT,
@@ -53,26 +52,69 @@ from Snapchat_Repost import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-STATE_PATH = Path("exports") / "snapchat_reels_autopublish_state.json"
 DIAG_FIELDS = FIELDS + ",media_product_type"
 
 DEFAULT_LOOKBACK_MINUTES = 60
 DEFAULT_GIVE_UP_AFTER_HOURS = 6
 SPOTLIGHT_LOCALE = "en_US"
 
-DONE_STATUSES = ("published", "given_up")
+SOURCE = "auto_reels"
+DESTINATION = "spotlight"
+DONE_STATUSES = ("posted", "given_up")
 
 
-# ---------------- local state ----------------
+# ---------------- DB state ----------------
 def load_state() -> dict:
-    if STATE_PATH.exists():
-        return json.loads(STATE_PATH.read_text())
-    return {}
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ig_content_id, status, permalink, channel, published_by,
+                       snapchat_media_id, posted_at, first_seen_at, attempts,
+                       last_attempt_at, error
+                FROM snapchat.publish_log
+                WHERE source = %s AND destination = %s
+                """,
+                (SOURCE, DESTINATION),
+            )
+            return {row["ig_content_id"]: dict(row) for row in cur.fetchall()}
+    finally:
+        conn.close()
 
 
-def save_state(state: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, indent=2, default=str))
+def save_entry(ig_content_id: str, *, status: str, permalink: str | None = None,
+               channel: str | None = None, snapchat_media_id: str | None = None,
+               posted_at: datetime | None = None, first_seen_at: datetime | None = None,
+               attempts: int = 0, last_attempt_at: datetime | None = None,
+               error: str | None = None) -> None:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO snapchat.publish_log
+                    (ig_content_id, source, destination, status, permalink, channel,
+                     snapchat_media_id, posted_at, first_seen_at, attempts,
+                     last_attempt_at, error)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (ig_content_id, destination, source) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    snapchat_media_id = COALESCE(EXCLUDED.snapchat_media_id, snapchat.publish_log.snapchat_media_id),
+                    posted_at = COALESCE(EXCLUDED.posted_at, snapchat.publish_log.posted_at),
+                    first_seen_at = COALESCE(EXCLUDED.first_seen_at, snapchat.publish_log.first_seen_at),
+                    attempts = EXCLUDED.attempts,
+                    last_attempt_at = EXCLUDED.last_attempt_at,
+                    error = EXCLUDED.error,
+                    updated_at = now()
+                """,
+                (ig_content_id, SOURCE, DESTINATION, status, permalink, channel,
+                 snapchat_media_id, posted_at, first_seen_at, attempts,
+                 last_attempt_at, error),
+            )
+            conn.commit()
+    finally:
+        conn.close()
 
 
 # ---------------- Instagram ----------------
@@ -141,48 +183,46 @@ def run(lookback_minutes: int, give_up_after_hours: int, dry_run: bool) -> None:
 
     for item in candidates:
         post_id = item["id"]
-        entry = state.setdefault(
-            post_id,
-            {"channel": item["_channel"], "permalink": item.get("permalink"), "first_seen_at": now.isoformat()},
-        )
-        entry["attempts"] = entry.get("attempts", 0) + 1
-        entry["last_attempt_at"] = now.isoformat()
+        existing = state.get(post_id, {})
+        attempts = existing.get("attempts", 0) + 1
+        first_seen = existing.get("first_seen_at") or now
 
-        # re-fetch on the post id rather than trusting the list response, so a
-        # media_url that only just became available is picked up
         post = get_ig_json(f"/{post_id}", {"fields": DIAG_FIELDS})
 
         if not post.get("media_url"):
-            first_seen = datetime.fromisoformat(entry["first_seen_at"])
             if now - first_seen > timedelta(hours=give_up_after_hours):
-                entry["status"] = "given_up"
-                entry["error"] = f"No media_url within {give_up_after_hours}h (Meta media_url bug)"
-                logger.warning(f"Giving up on {post_id} ({item['_channel']}) - {entry['error']}")
+                error_msg = f"No media_url within {give_up_after_hours}h (Meta media_url bug)"
+                logger.warning(f"Giving up on {post_id} ({item['_channel']}) - {error_msg}")
+                save_entry(post_id, status="given_up", permalink=item.get("permalink"),
+                           channel=item["_channel"], first_seen_at=first_seen,
+                           attempts=attempts, last_attempt_at=now, error=error_msg)
             else:
-                entry["status"] = "pending"
                 logger.info(f"{post_id} ({item['_channel']}) has no media_url yet, will retry next run")
-            save_state(state)
+                save_entry(post_id, status="pending", permalink=item.get("permalink"),
+                           channel=item["_channel"], first_seen_at=first_seen,
+                           attempts=attempts, last_attempt_at=now)
             continue
 
         if dry_run:
             logger.info(f"[dry-run] would publish {post_id} ({item['_channel']}) to Spotlight - {post.get('permalink')}")
-            save_state(state)
             continue
 
         try:
-            logger.info(f"Publishing {post_id} ({item['_channel']}) to Spotlight - {post.get('permalink')}")
-            media_id = _publish_reel(access_token, post)
-            entry["status"] = "published"
-            entry["spotlight_media_id"] = media_id
-            entry["published_at"] = now.isoformat()
-            entry.pop("error", None)
-            logger.info(f"Published {post_id} -> spotlight media_id={media_id}")
+            with publish_lock(post_id, DESTINATION):
+                logger.info(f"Publishing {post_id} ({item['_channel']}) to Spotlight - {post.get('permalink')}")
+                media_id = _publish_reel(access_token, post)
+                logger.info(f"Published {post_id} -> spotlight media_id={media_id}")
+                save_entry(post_id, status="posted", permalink=item.get("permalink"),
+                           channel=item["_channel"], snapchat_media_id=media_id,
+                           posted_at=now, first_seen_at=first_seen,
+                           attempts=attempts, last_attempt_at=now)
+        except AlreadyPublishedError as e:
+            logger.info(f"Skipping {post_id} ({item['_channel']}): {e}")
         except Exception as e:
-            entry["status"] = "pending"
-            entry["error"] = str(e)
             logger.error(f"Failed to publish {post_id}: {e}")
-        finally:
-            save_state(state)
+            save_entry(post_id, status="pending", permalink=item.get("permalink"),
+                       channel=item["_channel"], first_seen_at=first_seen,
+                       attempts=attempts, last_attempt_at=now, error=str(e))
 
 
 if __name__ == "__main__":

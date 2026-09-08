@@ -4,7 +4,8 @@ lookup, slide preview/selection, and the publish flow, parameterized by
 destination (post_story vs post_spotlight) since everything else is identical.
 """
 
-import json
+import hashlib
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -12,6 +13,7 @@ from typing import Callable
 import streamlit as st
 
 from config import ACCOUNT_CHANNEL, IG_USER_IDS
+from db import get_connection
 from Snapchat_Repost import (
     FIELDS,
     get_ig_json,
@@ -55,16 +57,147 @@ def channel_selector(key: str) -> int:
     return ids_by_name[chosen]
 
 
-def load_log(path: Path) -> dict:
-    if path.exists():
-        return json.loads(path.read_text())
-    return {}
+# ---------------- DB-backed publish log ----------------
+
+class AlreadyPublishedError(Exception):
+    """Raised when content has already been posted to the target destination."""
 
 
-def save_log(path: Path, log: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(log, indent=2, default=str))
+def load_log(destination: str) -> dict:
+    """Load publish log from the DB for a destination, across ALL sources.
+    Returns a dict keyed by ig_content_id. When the same content has rows
+    from multiple sources, the 'posted' row wins (then most recently updated)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (p.ig_content_id)
+                       p.ig_content_id, p.status, p.source, p.permalink, p.published_by,
+                       p.snapchat_media_id, p.snapchat_request_id, p.posted_at,
+                       (SELECT COUNT(*) FROM snapchat.publish_log_snaps s
+                        WHERE s.publish_log_id = p.id) AS snap_count
+                FROM snapchat.publish_log p
+                WHERE p.destination = %s
+                ORDER BY p.ig_content_id,
+                         CASE WHEN p.status = 'posted' THEN 0 ELSE 1 END,
+                         p.updated_at DESC
+                """,
+                (destination,),
+            )
+            return {row["ig_content_id"]: dict(row) for row in cur.fetchall()}
+    finally:
+        conn.close()
 
+
+def save_log_entry(
+    ig_content_id: str, source: str, destination: str, *,
+    status: str = "posted",
+    permalink: str | None = None,
+    channel: str | None = None,
+    published_by: str | None = None,
+    snapchat_media_id: str | None = None,
+    snapchat_request_id: str | None = None,
+    posted_at: datetime | None = None,
+    error: str | None = None,
+    snaps: list[dict] | None = None,
+) -> None:
+    """Upsert one publish log entry (and optional child snap rows)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO snapchat.publish_log
+                    (ig_content_id, source, destination, status, permalink, channel,
+                     published_by, snapchat_media_id, snapchat_request_id, posted_at, error)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (ig_content_id, destination, source) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    published_by = COALESCE(EXCLUDED.published_by, snapchat.publish_log.published_by),
+                    snapchat_media_id = COALESCE(EXCLUDED.snapchat_media_id, snapchat.publish_log.snapchat_media_id),
+                    snapchat_request_id = COALESCE(EXCLUDED.snapchat_request_id, snapchat.publish_log.snapchat_request_id),
+                    posted_at = COALESCE(EXCLUDED.posted_at, snapchat.publish_log.posted_at),
+                    error = EXCLUDED.error,
+                    updated_at = now()
+                RETURNING id
+                """,
+                (ig_content_id, source, destination, status, permalink, channel,
+                 published_by, snapchat_media_id, snapchat_request_id, posted_at, error),
+            )
+            log_id = cur.fetchone()["id"]
+
+            if snaps:
+                cur.execute(
+                    "DELETE FROM snapchat.publish_log_snaps WHERE publish_log_id = %s",
+                    (log_id,),
+                )
+                for idx, snap in enumerate(snaps, start=1):
+                    cur.execute(
+                        """
+                        INSERT INTO snapchat.publish_log_snaps
+                            (publish_log_id, snap_index, snapchat_media_id, snapchat_request_id)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (log_id, idx, snap["media_id"], snap.get("request_id")),
+                    )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------- Publish lock (dedup + concurrency) ----------------
+
+def _publish_lock_key(ig_content_id: str, destination: str) -> int:
+    """Deterministic signed int64 from (ig_content_id, destination) for pg_advisory_lock."""
+    h = hashlib.md5(f"{ig_content_id}:{destination}".encode()).digest()
+    return int.from_bytes(h[:8], byteorder="big", signed=True)
+
+
+@contextmanager
+def publish_lock(ig_content_id: str, destination: str):
+    """Acquire a Postgres advisory lock on (content, destination) and verify
+    the content hasn't already been posted (by ANY source). Prevents both
+    concurrent races and cross-flow duplicates.
+
+    Raises AlreadyPublishedError if the lock can't be acquired or the content
+    is already posted."""
+    conn = get_connection()
+    key = _publish_lock_key(ig_content_id, destination)
+    locked = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s)", (key,))
+            locked = cur.fetchone()["pg_try_advisory_lock"]
+            if not locked:
+                raise AlreadyPublishedError(
+                    f"Another process is already publishing this content to {destination}"
+                )
+            cur.execute(
+                """
+                SELECT source FROM snapchat.publish_log
+                WHERE ig_content_id = %s AND destination = %s AND status = 'posted'
+                LIMIT 1
+                """,
+                (ig_content_id, destination),
+            )
+            existing = cur.fetchone()
+            if existing:
+                raise AlreadyPublishedError(
+                    f"Already posted to {destination} (via {existing['source']})"
+                )
+        yield
+    finally:
+        if locked:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (key,))
+            except Exception:
+                pass
+        conn.close()
+
+
+# ---------------- Helpers ----------------
 
 def _is_video(item: dict) -> bool:
     return item["media_type"] in ("VIDEO", "REEL")
@@ -91,31 +224,46 @@ def lookup(permalink: str) -> dict:
 def publish_slides(
     permalink: str, post: dict, slides: list[dict], username: str,
     name_prefix: str, post_one: Callable[[str, str], dict],
+    source: str, destination: str,
 ) -> dict:
     """Uploads + publishes each selected slide in order. `post_one(access_token,
     media_id)` does the destination-specific call (post_story / post_spotlight)
-    and returns its response dict."""
-    access_token = get_access_token()
-    posted = []
-    for idx, item in enumerate(slides, start=1):
-        is_video = _is_video(item)
-        processed, _ = process_slide(item["url"], item["media_type"])
-        ciphertext, key, iv = encrypt_media(processed)
+    and returns its response dict. Saves the result to the DB.
 
-        ext = "mp4" if is_video else "jpg"
-        media = create_media(
-            access_token, "VIDEO" if is_video else "IMAGE",
-            name=f"{name_prefix}_{post['id']}_{idx}.{ext}", key=key, iv=iv,
+    Acquires an advisory lock and checks for cross-source duplicates before
+    calling the Snapchat API. Raises AlreadyPublishedError if already posted."""
+    with publish_lock(post["id"], destination):
+        access_token = get_access_token()
+        posted = []
+        for idx, item in enumerate(slides, start=1):
+            is_video = _is_video(item)
+            processed, _ = process_slide(item["url"], item["media_type"])
+            ciphertext, key, iv = encrypt_media(processed)
+
+            ext = "mp4" if is_video else "jpg"
+            media = create_media(
+                access_token, "VIDEO" if is_video else "IMAGE",
+                name=f"{name_prefix}_{post['id']}_{idx}.{ext}", key=key, iv=iv,
+            )
+            upload_media(access_token, media["add_path"], media["finalize_path"], ciphertext)
+            result = post_one(access_token, media["media_id"])
+            posted.append({"media_id": media["media_id"], "request_id": result.get("request_id")})
+
+        now = datetime.now(timezone.utc)
+        save_log_entry(
+            post["id"], source, destination,
+            status="posted",
+            permalink=permalink,
+            published_by=username,
+            posted_at=now,
+            snaps=posted,
         )
-        upload_media(access_token, media["add_path"], media["finalize_path"], ciphertext)
-        result = post_one(access_token, media["media_id"])
-        posted.append({"media_id": media["media_id"], "request_id": result.get("request_id")})
 
     return {
         "status": "posted",
         "post_id": post["id"],
         "permalink": permalink,
-        "posted_at": datetime.now(timezone.utc).isoformat(),
+        "posted_at": now.isoformat(),
         "published_by": username,
         "snaps": posted,
     }
@@ -126,7 +274,8 @@ def render_publisher_page(
     title: str,
     subtitle: str,
     session_key: str,
-    log_path: Path,
+    source: str,
+    destination: str,
     username: str,
     name_prefix: str,
     post_one: Callable[[str, str], dict],
@@ -160,7 +309,7 @@ def render_publisher_page(
             for permalink in permalinks:
                 found[permalink] = lookup(permalink)
 
-    log = load_log(log_path)
+    log = load_log(destination)
 
     for permalink, entry in found.items():
         with st.container(border=True):
@@ -180,7 +329,7 @@ def render_publisher_page(
             if already and already.get("status") == "posted":
                 by = already.get("published_by")
                 suffix = f" by {by}" if by else ""
-                st.success(f"Already posted on {already['posted_at']}{suffix} · {len(already['snaps'])} snap(s)")
+                st.success(f"Already posted on {already['posted_at']}{suffix} · {already['snap_count']} snap(s)")
                 continue
 
             if not all_slides:
@@ -232,10 +381,14 @@ def render_publisher_page(
             ):
                 with st.spinner("Posting to Snapchat..."):
                     try:
-                        result = publish_slides(permalink, post, selected_slides, username, name_prefix, post_one)
-                        log[post["id"]] = result
-                        save_log(log_path, log)
+                        result = publish_slides(
+                            permalink, post, selected_slides, username,
+                            name_prefix, post_one, source, destination,
+                        )
                         st.success(f"Posted - {len(result['snaps'])} snap(s)")
+                        st.rerun()
+                    except AlreadyPublishedError as e:
+                        st.info(str(e))
                         st.rerun()
                     except Exception as e:
                         st.error(f"Posting failed: {e}")
@@ -243,27 +396,41 @@ def render_publisher_page(
 
 def publish_db_item(
     item: dict, username: str, name_prefix: str,
+    source: str, destination: str,
     post_one: Callable[[str, str], dict] = post_story,
 ) -> dict:
     """Uploads + posts one DB-sourced item's own media_url/media_type via
-    `post_one` (post_story by default, or post_spotlight - see
-    app_pages/posts_publisher_spotlight.py). Returns the log entry to store
-    under str(item['id'])."""
-    access_token = get_access_token()
-    is_video = _is_video(item)
-    processed, _ = process_slide(item["media_url"], item["media_type"])
-    ciphertext, key, iv = encrypt_media(processed)
+    `post_one` (post_story by default, or post_spotlight). Acquires an advisory
+    lock and checks for cross-source duplicates before calling the Snapchat API.
+    Saves the result to the DB. Raises AlreadyPublishedError if already posted."""
+    content_id = str(item["id"])
+    with publish_lock(content_id, destination):
+        access_token = get_access_token()
+        is_video = _is_video(item)
+        processed, _ = process_slide(item["media_url"], item["media_type"])
+        ciphertext, key, iv = encrypt_media(processed)
 
-    ext = "mp4" if is_video else "jpg"
-    media = create_media(
-        access_token, "VIDEO" if is_video else "IMAGE",
-        name=f"{name_prefix}_{item['id']}.{ext}", key=key, iv=iv,
-    )
-    upload_media(access_token, media["add_path"], media["finalize_path"], ciphertext)
-    result = post_one(access_token, media["media_id"])
+        ext = "mp4" if is_video else "jpg"
+        media = create_media(
+            access_token, "VIDEO" if is_video else "IMAGE",
+            name=f"{name_prefix}_{item['id']}.{ext}", key=key, iv=iv,
+        )
+        upload_media(access_token, media["add_path"], media["finalize_path"], ciphertext)
+        result = post_one(access_token, media["media_id"])
+
+        now = datetime.now(timezone.utc)
+        save_log_entry(
+            content_id, source, destination,
+            status="posted",
+            published_by=username,
+            snapchat_media_id=media["media_id"],
+            snapchat_request_id=result.get("request_id"),
+            posted_at=now,
+        )
+
     return {
         "status": "posted",
-        "posted_at": datetime.now(timezone.utc).isoformat(),
+        "posted_at": now.isoformat(),
         "published_by": username,
         "media_id": media["media_id"],
         "request_id": result.get("request_id"),
@@ -274,7 +441,8 @@ def render_db_browser_page(
     *,
     title: str,
     subtitle: str,
-    log_path: Path,
+    source: str,
+    destination: str,
     username: str,
     name_prefix: str,
     fetch_items: Callable[[int], list[dict]],
@@ -299,7 +467,7 @@ def render_db_browser_page(
             st.rerun()
 
     items = fetch_items(ig_user_id)
-    log = load_log(log_path)
+    log = load_log(destination)
 
     if not items:
         st.info("Nothing found.")
@@ -341,8 +509,9 @@ def render_db_browser_page(
             for item in selected:
                 item_key = str(item["id"])
                 try:
-                    log[item_key] = publish_db_item(item, username, name_prefix)
-                    save_log(log_path, log)
+                    publish_db_item(item, username, name_prefix, source, destination)
+                except AlreadyPublishedError:
+                    st.info(f"{item_key} was already posted")
                 except Exception as e:
                     st.error(f"Failed to post {item_key}: {e}")
 
@@ -351,7 +520,8 @@ def render_posts_grid_page(
     *,
     title: str,
     subtitle: str,
-    log_path: Path,
+    source: str,
+    destination: str,
     username: str,
     name_prefix: str,
     post_one: Callable[[str, str], dict],
@@ -410,17 +580,14 @@ def render_posts_grid_page(
                 return
 
             if not is_carousel:
-                # Vertical alignment with "Push all slides" (see the
-                # margin-top on this button's key in streamlit_app.py)
-                # rather than a spacer element - st.container(height=..)
-                # enforces its own minimum height, which threw off precise
-                # alignment.
                 push_label = "Push Reel" if is_video else "Push"
                 if st.button(push_label, key=f"{name_prefix}_push_{item_key}", icon=":material/send:", type="primary"):
                     with st.spinner("Posting..."):
                         try:
-                            log[item_key] = publish_db_item(item, username, name_prefix, post_one)
-                            save_log(log_path, log)
+                            publish_db_item(item, username, name_prefix, source, destination, post_one)
+                            st.rerun()
+                        except AlreadyPublishedError as e:
+                            st.info(str(e))
                             st.rerun()
                         except Exception as e:
                             st.error(f"Failed to post: {e}")
@@ -429,8 +596,10 @@ def render_posts_grid_page(
             if st.button("Push cover slide", key=f"{name_prefix}_cover_{item_key}", icon=":material/image:"):
                 with st.spinner("Posting cover..."):
                     try:
-                        log[item_key] = publish_db_item(item, username, name_prefix, post_one)
-                        save_log(log_path, log)
+                        publish_db_item(item, username, name_prefix, source, destination, post_one)
+                        st.rerun()
+                    except AlreadyPublishedError as e:
+                        st.info(str(e))
                         st.rerun()
                     except Exception as e:
                         st.error(f"Failed to post: {e}")
@@ -448,12 +617,13 @@ def render_posts_grid_page(
                 else:
                     with st.spinner(f"Posting {len(found['slides'])} slide(s)..."):
                         try:
-                            result = publish_slides(
+                            publish_slides(
                                 item["permalink"], found["post"], found["slides"], username,
-                                f"{name_prefix}_full", post_one,
+                                f"{name_prefix}_full", post_one, source, destination,
                             )
-                            log[item_key] = result
-                            save_log(log_path, log)
+                            st.rerun()
+                        except AlreadyPublishedError as e:
+                            st.info(str(e))
                             st.rerun()
                         except Exception as e:
                             st.error(f"Failed to post: {e}")
@@ -469,7 +639,7 @@ def render_posts_grid_page(
             fetch_instagram_posts_page.clear()
             st.rerun()
 
-    log = load_log(log_path)
+    log = load_log(destination)
 
     # video_only also filters at the SQL level (not just hiding non-video
     # cards in _render_card) - Spotlight's recent posting mix is often mostly
@@ -481,7 +651,7 @@ def render_posts_grid_page(
 
     # One continuous grid, not two separate containers - otherwise, whenever
     # the first batch doesn't end on an exact row boundary, its last
-    # (partial) row stays visibly short instead of the second batch flowing
+    # (partial) row stays visually short instead of the second batch flowing
     # up to fill it.
     with st.container(horizontal=True, gap=16):
         for post in first_posts:
