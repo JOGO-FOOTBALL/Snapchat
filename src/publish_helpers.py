@@ -11,6 +11,7 @@ from typing import Callable
 
 import streamlit as st
 
+from config import ACCOUNT_CHANNEL, IG_USER_IDS
 from Snapchat_Repost import (
     FIELDS,
     get_ig_json,
@@ -28,6 +29,30 @@ from Snapchat_Repost import (
 from db import fetch_instagram_posts_page
 
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "Logo433.png"
+
+# Default channel for the Posts/Stories publisher pages' channel filter below
+# - Main, the same account config.IG_USER_IDS scans automatically.
+DEFAULT_CHANNEL_ID = int(IG_USER_IDS[0])
+
+
+def channel_selector(key: str) -> int:
+    """Channel filter for the Posts/Stories publisher pages (browsing
+    socials_analytics data, which spans all of 433's IG accounts in
+    config.ACCOUNT_CHANNEL - unlike the automated Reels scan, which only
+    ever looks at Main). Defaults to Main; returns the chosen IG user id.
+
+    Narrow fixed width + a collapsed label (rather than the default full-width,
+    labeled selectbox) so it sits compactly inline next to the subtitle/Refresh
+    button instead of on its own full-width row."""
+    ids_by_name = {name: int(uid) for uid, name in ACCOUNT_CHANNEL.items()}
+    names = list(ids_by_name)
+    default_name = ACCOUNT_CHANNEL[str(DEFAULT_CHANNEL_ID)]
+    with st.container(width=140):
+        chosen = st.selectbox(
+            "Channel", names, index=names.index(default_name), key=key,
+            label_visibility="collapsed",
+        )
+    return ids_by_name[chosen]
 
 
 def load_log(path: Path) -> dict:
@@ -252,27 +277,28 @@ def render_db_browser_page(
     log_path: Path,
     username: str,
     name_prefix: str,
-    fetch_items: Callable[[], list[dict]],
+    fetch_items: Callable[[int], list[dict]],
     clear_cache: Callable[[], None],
 ) -> None:
     """Renders a page that browses many independent DB-backed items at once
     (Stories/Posts publisher) - each with a lightweight thumbnail preview and
     an opt-in checkbox (unchecked by default, unlike render_publisher_page's
     per-slide checkboxes, since dozens of items can be listed here at once).
-    `fetch_items()` returns dicts with at least: id, media_type, media_url,
-    thumbnail_url_abs, timestamp_utc, and an optional `note` shown under the
-    thumbnail (e.g. flagging a carousel's cover-only limitation)."""
+    `fetch_items(ig_user_id)` returns dicts with at least: id, media_type,
+    media_url, thumbnail_url_abs, timestamp_utc, and an optional `note` shown
+    under the thumbnail (e.g. flagging a carousel's cover-only limitation)."""
     with st.container(horizontal=True, vertical_alignment="center"):
         if LOGO_PATH.exists():
             st.image(str(LOGO_PATH), width=48)
         st.title(title)
     with st.container(horizontal=True, vertical_alignment="center"):
         st.caption(subtitle)
+        ig_user_id = channel_selector(key=f"{name_prefix}_channel")
         if st.button("Refresh", key=f"{name_prefix}_refresh", icon=":material/refresh:"):
             clear_cache()
             st.rerun()
 
-    items = fetch_items()
+    items = fetch_items(ig_user_id)
     log = load_log(log_path)
 
     if not items:
@@ -328,7 +354,6 @@ def render_posts_grid_page(
     log_path: Path,
     username: str,
     name_prefix: str,
-    ig_user_id: int,
     post_one: Callable[[str, str], dict],
     video_only: bool = False,
     first_batch: int = 15,
@@ -336,8 +361,9 @@ def render_posts_grid_page(
 ) -> None:
     """Renders the Posts publisher grid (see app_pages/posts_publisher.py and
     posts_publisher_spotlight.py, its Story and Spotlight variants) - browses
-    socials_analytics.instagram_posts (db.fetch_instagram_posts_page) and
-    pushes selected items via `post_one` (post_story or post_spotlight).
+    socials_analytics.instagram_posts (db.fetch_instagram_posts_page) for the
+    channel picked via channel_selector (defaults to Main) and pushes
+    selected items via `post_one` (post_story or post_spotlight).
 
     Loads in two batches: the live media_url check in db.py is what makes a
     full fetch slow, so a small first batch renders fast and the rest streams
@@ -438,6 +464,7 @@ def render_posts_grid_page(
         st.title(title)
     with st.container(horizontal=True, vertical_alignment="center"):
         st.caption(subtitle)
+        ig_user_id = channel_selector(key=f"{name_prefix}_channel")
         if st.button("Refresh", key=f"{name_prefix}_refresh", icon=":material/refresh:"):
             fetch_instagram_posts_page.clear()
             st.rerun()
