@@ -1,28 +1,26 @@
 services:
-  reels-autopublish:
-    image: snapchat-repost
+  # reels-autopublish:
+  #   image: snapchat-repost
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   env_file:
+  #     - .env
+
+  #   # Unattended Reels -> Spotlight pipeline (no manual review), meant to be run on a
+  #   # schedule (e.g. every 10 min) by an external scheduler - cron, Task Scheduler, Airflow,
+  #   # a k8s CronJob, etc. One pass per run, then exits:
+  #   #   docker compose run --rm reels-autopublish
+  #   #   docker compose run --rm reels-autopublish python Snapchat_Reels_Autopublish.py --dry-run
+  #   command: ["python", "Snapchat_Reels_Autopublish.py"]
+
+  story-publisher:
     build:
       context: .
       dockerfile: Dockerfile
     env_file:
       - .env
-
-    # Unattended Reels -> Spotlight pipeline (no manual review), meant to be run on a
-    # schedule (e.g. every 10 min) by an external scheduler - cron, Task Scheduler, Airflow,
-    # a k8s CronJob, etc. One pass per run, then exits:
-    #   docker compose run --rm reels-autopublish
-    #   docker compose run --rm reels-autopublish python Snapchat_Reels_Autopublish.py --dry-run
-    command: ["python", "Snapchat_Reels_Autopublish.py"]
-
-  story-publisher:
-    # No own `build:` - reuses the image built by the reels-autopublish service
-    # above (same tag). Giving both services their own `build:` block for the
-    # same image tag makes Docker's bake builder fail with "already exists".
-    # Build it first (or run `docker compose build` once) before `up story-publisher`.
-    image: snapchat-repost
-    env_file:
-      - .env
-    command: ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    command: ["streamlit", "run", "src/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
     ports:
       # Host port 8502, not 8501 - 8501 is already taken by another local
       # project's container. The app still listens on 8501 inside the container.
