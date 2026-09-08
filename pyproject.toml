@@ -1,0 +1,21 @@
+[project]
+name = "snapchat"
+version = "0.1.0"
+description = "Snapchat content repost & publishing tools"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "azure-identity>=1.15.0",
+    "azure-keyvault-secrets>=4.8.0",
+    "python-dotenv>=1.1.0",
+    "requests>=2.31.0",
+    "cryptography>=46.0.3",
+    "Pillow>=11.0.0",
+    "streamlit>=1.62.0",
+    "streamlit-authenticator>=0.4.2",
+    "bcrypt>=5.0.0",
+    "PyYAML>=6.0.3",
+    "psycopg2-binary>=2.9.12",
+    "alembic>=1.19.2",
+    "sqlalchemy>=2.0.52",
+]
