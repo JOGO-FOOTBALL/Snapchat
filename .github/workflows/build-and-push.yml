@@ -8,9 +8,10 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - "Dockerfile"
+  workflow_dispatch:
 
 env:
-  IMAGE: ${{ secrets.ACR_SERVER }}/recommendations
+  IMAGE: ${{ secrets.ACR_SERVER }}/snapchat
 
 jobs:
   build:
@@ -40,5 +41,5 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
             ${{ env.IMAGE }}:latest
-          cache-from: type=gha,scope=recommendations
-          cache-to: type=gha,mode=max,scope=recommendations
+          cache-from: type=gha,scope=snapchat
+          cache-to: type=gha,mode=max,scope=snapchat
