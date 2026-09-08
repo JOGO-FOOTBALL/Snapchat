@@ -23,6 +23,40 @@ class Secrets:
     # content for the Snapchat repost queue.
     META_API_TOKEN = secret_client.get_secret("SocialsAnalyticsMetaApiToken").value
 
+    # 433 ds database dev
+    POSTGRES_USERNAME_DS_DEV = secret_client.get_secret(
+        "DatasciencePsqlServerUsernameDev"
+    ).value
+    POSTGRES_PASSWORD_DS_DEV = secret_client.get_secret(
+        "DatasciencePsqlServerPasswordDev"
+    ).value
+    POSTGRES_SERVER_DS_DEV = secret_client.get_secret(
+        "DatasciencePsqlServerUrlDev"
+    ).value
+    POSTGRES_PORT_DS_DEV = secret_client.get_secret(
+        "DatasciencePsqlServerPortDev"
+    ).value
+    POSTGRES_DATABASE_DS_DEV = secret_client.get_secret(
+        "DatasciencePsqlServerDatabaseDev"
+    ).value
+
+    # 433 ds database Prod
+    POSTGRES_USERNAME_DS_PROD = secret_client.get_secret(
+        "DatasciencePsqlServerUsernameProd"
+    ).value
+    POSTGRES_PASSWORD_DS_PROD = secret_client.get_secret(
+        "DatasciencePsqlServerPasswordProd"
+    ).value
+    POSTGRES_SERVER_DS_PROD = secret_client.get_secret(
+        "DatasciencePsqlServerUrlProd"
+    ).value
+    POSTGRES_PORT_DS_PROD = secret_client.get_secret(
+        "DatasciencePsqlServerPortProd"
+    ).value
+    POSTGRES_DATABASE_DS_PROD = secret_client.get_secret(
+        "DatasciencePsqlServerDatabaseProd"
+    ).value
+
 
 # Owned Instagram accounts (kept for reference / channel labels)
 ACCOUNT_CHANNEL = {

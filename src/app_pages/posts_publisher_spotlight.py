@@ -5,14 +5,11 @@ types, not just reels). video_only=True both filters the DB query to
 VIDEO/REEL and hides any non-video card as a safety net - Spotlight has no
 multi-slide concept and is video-only."""
 
-from pathlib import Path
-
 import streamlit as st
 
 from publish_helpers import render_posts_grid_page
 from Snapchat_Repost import post_spotlight
 
-LOG_PATH = Path("exports") / "streamlit_posts_spotlight_publish_log.json"
 NAME_PREFIX = "post_db"
 SPOTLIGHT_LOCALE = "en_US"
 
@@ -21,7 +18,8 @@ username = st.session_state["username"]
 render_posts_grid_page(
     title="Posts publisher - Spotlight",
     subtitle="Browse Instagram reels and push them to Snapchat Spotlight.",
-    log_path=LOG_PATH,
+    source="manual_db_posts",
+    destination="spotlight",
     username=username,
     name_prefix=NAME_PREFIX,
     post_one=lambda access_token, media_id: post_spotlight(access_token, media_id, locale=SPOTLIGHT_LOCALE),

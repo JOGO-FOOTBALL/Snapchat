@@ -1,11 +1,10 @@
-"""Read-only access to socials_analytics.instagram_stories (Postgres) for the
-Stories publisher page - see app_pages/stories_publisher.py.
+"""Database access for the Snapchat repost project.
 
-Connection secrets come from the same Key Vault as everything else in
-config.py (DatasciencePsqlServer*Prod), fetched lazily like
-config.get_streamlit_auth_config_yaml() rather than at import time.
+Connection targets dev or prod based on the ENVIRONMENT env var (default: dev).
+Secrets come from Azure Key Vault via config.Secrets.
 """
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import psycopg2
@@ -13,21 +12,22 @@ import psycopg2.extras
 import requests
 import streamlit as st
 
-from config import secret_client
+from config import Secrets
 
-_SECRET_NAMES = {
-    "host": "DatasciencePsqlServerUrlProd",
-    "port": "DatasciencePsqlServerPortProd",
-    "dbname": "DatasciencePsqlServerDatabaseProd",
-    "user": "DatasciencePsqlServerUsernameProd",
-    "password": "DatasciencePsqlServerPasswordProd",
-}
+_environment = os.getenv("ENVIRONMENT", "dev").upper()
 
 
-def _get_connection():
-    kwargs = {key: secret_client.get_secret(name).value for key, name in _SECRET_NAMES.items()}
-    kwargs["port"] = int(kwargs["port"])
-    return psycopg2.connect(sslmode="require", cursor_factory=psycopg2.extras.RealDictCursor, **kwargs)
+def get_connection():
+    s = Secrets
+    return psycopg2.connect(
+        host=getattr(s, f"POSTGRES_SERVER_DS_{_environment}"),
+        port=int(getattr(s, f"POSTGRES_PORT_DS_{_environment}")),
+        dbname=getattr(s, f"POSTGRES_DATABASE_DS_{_environment}"),
+        user=getattr(s, f"POSTGRES_USERNAME_DS_{_environment}"),
+        password=getattr(s, f"POSTGRES_PASSWORD_DS_{_environment}"),
+        sslmode="require",
+        cursor_factory=psycopg2.extras.RealDictCursor,
+    )
 
 
 def _media_url_is_alive(url: str) -> bool:
@@ -65,7 +65,7 @@ def fetch_recent_instagram_stories(ig_user_id: int, lookback_hours: int) -> list
     Snaps get posted in) matches the order the Stories were actually posted
     on Instagram. Skips rows with no media_url (the scraper occasionally
     misses it, same class of gap as the Graph API's own media_url bug)."""
-    conn = _get_connection()
+    conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -103,7 +103,7 @@ def fetch_instagram_posts_page(ig_user_id: int, offset: int, limit: int, reels_o
     posts" page can come back with almost no reels even though thousands
     exist further back. Used by the Spotlight variant of the Posts publisher
     page (video-only, no other type is ever postable there)."""
-    conn = _get_connection()
+    conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
