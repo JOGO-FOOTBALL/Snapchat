@@ -9,7 +9,6 @@ from publish_helpers import render_db_browser_page
 from db import fetch_recent_instagram_stories
 
 LOG_PATH = Path("exports") / "streamlit_stories_publish_log.json"
-IG_USER_ID = 17841401739313962  # Main - matches config.IG_USER_IDS
 LOOKBACK_HOURS = 24
 
 username = st.session_state["username"]
@@ -20,8 +19,8 @@ render_db_browser_page(
     log_path=LOG_PATH,
     username=username,
     name_prefix="story_db",
-    fetch_items=lambda: [
-        {**s, "id": s["story_id"]} for s in fetch_recent_instagram_stories(IG_USER_ID, LOOKBACK_HOURS)
+    fetch_items=lambda ig_user_id: [
+        {**s, "id": s["story_id"]} for s in fetch_recent_instagram_stories(ig_user_id, LOOKBACK_HOURS)
     ],
     clear_cache=fetch_recent_instagram_stories.clear,
 )
