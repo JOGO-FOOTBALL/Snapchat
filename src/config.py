@@ -31,8 +31,14 @@ ACCOUNT_CHANNEL = {
     "17841400565524817": "WomenFC",
     "17841401435554534": "E-sports",
 }
-# Only Main gets scanned for new posts to queue for Snapchat
+# Only Main gets scanned for new posts to queue for Snapchat (the automated
+# Reels-to-Spotlight pipeline, Snapchat_Reels_Autopublish.py)
 IG_USER_IDS = ("17841401739313962",)
+
+# All 433 IG accounts, for URL-based post lookup (find_post_by_permalink) and
+# the Posts/Stories publisher pages' channel filter - unlike IG_USER_IDS
+# above, not limited to Main.
+ALL_IG_USER_IDS = tuple(int(uid) for uid in ACCOUNT_CHANNEL)
 
 API_VER = os.getenv("IG_API_VER", "v25.0")
 GRAPH = f"https://graph.facebook.com/{API_VER}"
