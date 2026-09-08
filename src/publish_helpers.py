@@ -110,8 +110,8 @@ def save_log_entry(
                 """
                 INSERT INTO snapchat.publish_log
                     (ig_content_id, source, destination, status, permalink, channel,
-                     published_by, snapchat_media_id, snapchat_request_id, posted_at, error)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     published_by, snapchat_media_id, snapchat_request_id, posted_at, error, attempts)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
                 ON CONFLICT (ig_content_id, destination, source) DO UPDATE SET
                     status = EXCLUDED.status,
                     published_by = COALESCE(EXCLUDED.published_by, snapchat.publish_log.published_by),
@@ -422,6 +422,7 @@ def publish_db_item(
         save_log_entry(
             content_id, source, destination,
             status="posted",
+            permalink=item.get("permalink"),
             published_by=username,
             snapchat_media_id=media["media_id"],
             snapchat_request_id=result.get("request_id"),
