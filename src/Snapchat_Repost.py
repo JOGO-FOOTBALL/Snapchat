@@ -46,6 +46,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from PIL import Image, ImageEnhance, ImageFilter
 
 from config import (
+    ALL_IG_USER_IDS,
     GRAPH,
     IG_USER_IDS,
     Secrets,
@@ -158,10 +159,12 @@ def _normalize_permalink(permalink: str) -> str:
 
 def find_post_by_permalink(permalink: str, max_pages: int = 20) -> dict:
     """Instagram's Graph API has no lookup-by-permalink endpoint, so this
-    pages through each configured account's recent media until it finds a
-    matching permalink."""
+    pages through each of 433's IG accounts' recent media until it finds a
+    matching permalink - all accounts (config.ALL_IG_USER_IDS), not just Main,
+    so the URL-based publisher pages work regardless of which channel a
+    permalink belongs to."""
     target = _normalize_permalink(permalink)
-    for uid in IG_USER_IDS:
+    for uid in ALL_IG_USER_IDS:
         next_url = f"/{uid}/media"
         for _ in range(max_pages):
             if not next_url:
