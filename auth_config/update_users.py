@@ -1,22 +1,26 @@
-"""Add users or reset a password in the streamlit-authenticator config stored
-in Azure Key Vault (see config.STREAMLIT_AUTH_CONFIG_SECRET_NAME / login.py).
+"""Add users, reset a password, or remove a user in the streamlit-authenticator
+config.yaml stored in Azure Blob Storage (container STREAMLIT_AUTH_CONTAINER_NAME,
+see src/config.py / login.py).
 
-Key Vault keeps every previous version of a secret automatically, so unlike a
-plain file/blob store this needs no manual backup step before overwriting -
-prior versions stay recoverable from the vault's version history.
+Every run backs up the current config to auth/backups/ before uploading the
+change, so prior versions stay recoverable even though blob storage (unlike
+Key Vault) has no automatic version history.
 
 Run from the repo root: python auth_config/update_users.py
 """
 
 import sys
+from datetime import datetime
 from getpass import getpass
 from pathlib import Path
 
 import bcrypt
-import yaml
+from utils433.absUtils import absUtils
 
 sys.path.append(str(Path(__file__).resolve().parent.parent / "src"))
-from config import STREAMLIT_AUTH_CONFIG_SECRET_NAME, secret_client
+from config import STREAMLIT_AUTH_BLOB_NAME, STREAMLIT_AUTH_CONTAINER_NAME, Secrets
+
+BACKUP_PREFIX = "auth/backups/config"
 
 
 def hash_password(plain_password: str) -> str:
@@ -85,8 +89,10 @@ def prompt_remove_user(usernames: dict) -> str | None:
 
 
 def main():
-    print(f"Downloading '{STREAMLIT_AUTH_CONFIG_SECRET_NAME}'...")
-    config = yaml.safe_load(secret_client.get_secret(STREAMLIT_AUTH_CONFIG_SECRET_NAME).value)
+    abs_ds = absUtils(Secrets.ABS_STORAGE_ACCOUNT_NAME_DS, Secrets.ABS_STORAGE_ACCOUNT_KEY_DS)
+
+    print(f"Downloading '{STREAMLIT_AUTH_BLOB_NAME}' from '{STREAMLIT_AUTH_CONTAINER_NAME}'...")
+    config = abs_ds.load_object(STREAMLIT_AUTH_CONTAINER_NAME, STREAMLIT_AUTH_BLOB_NAME)
 
     credentials = config.setdefault("credentials", {})
     usernames = credentials.setdefault("usernames", {})
@@ -107,7 +113,7 @@ def main():
         if input("Proceed with upload? [y/N]: ").strip().lower() != "y":
             print("Aborted. No changes uploaded.")
             return
-        usernames.update(new_users)
+        apply_change = lambda: usernames.update(new_users)
 
     elif choice == "2":
         result = prompt_reset_password(usernames)
@@ -119,7 +125,7 @@ def main():
         if input("Proceed with upload? [y/N]: ").strip().lower() != "y":
             print("Aborted. No changes uploaded.")
             return
-        usernames[username]["password"] = new_hash
+        apply_change = lambda: usernames[username].__setitem__("password", new_hash)
 
     elif choice == "3":
         username = prompt_remove_user(usernames)
@@ -130,14 +136,32 @@ def main():
         if input("Proceed with upload? [y/N]: ").strip().lower() != "y":
             print("Aborted. No changes uploaded.")
             return
-        del usernames[username]
+        apply_change = lambda: usernames.pop(username)
 
     else:
         print("Invalid choice. Exiting.")
         return
 
-    print(f"Uploading updated config to '{STREAMLIT_AUTH_CONFIG_SECRET_NAME}'...")
-    secret_client.set_secret(STREAMLIT_AUTH_CONFIG_SECRET_NAME, yaml.safe_dump(config))
+    # Back up the config as it currently stands in blob storage *before*
+    # mutating it in memory, otherwise the "backup" would already contain
+    # the change it's meant to be a fallback from.
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    backup_blob = f"{BACKUP_PREFIX}_{timestamp}.yaml"
+    print(f"Backing up current config to '{backup_blob}'...")
+    abs_ds.upload_object(
+        data=config,
+        container_name=STREAMLIT_AUTH_CONTAINER_NAME,
+        blob_name=backup_blob,
+    )
+
+    apply_change()
+
+    print(f"Uploading updated config to '{STREAMLIT_AUTH_BLOB_NAME}'...")
+    abs_ds.upload_object(
+        data=config,
+        container_name=STREAMLIT_AUTH_CONTAINER_NAME,
+        blob_name=STREAMLIT_AUTH_BLOB_NAME,
+    )
     print("Done.")
 
 
