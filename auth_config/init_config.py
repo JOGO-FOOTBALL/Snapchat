@@ -1,7 +1,7 @@
-"""Bootstrap the initial streamlit-authenticator config as a single Azure Key
-Vault secret (see config.STREAMLIT_AUTH_CONFIG_SECRET_NAME / login.py).
+"""Bootstrap the initial streamlit-authenticator config.yaml in Azure Blob
+Storage (container STREAMLIT_AUTH_CONTAINER_NAME, see src/config.py / login.py).
 
-Use this once per environment. Refuses to run if the secret already exists -
+Use this once per environment. Refuses to run if the live blob already exists -
 use update_users.py to add users or reset a password afterwards.
 
 Run from the repo root: python auth_config/init_config.py
@@ -13,11 +13,11 @@ from getpass import getpass
 from pathlib import Path
 
 import bcrypt
-import yaml
 from azure.core.exceptions import ResourceNotFoundError
+from utils433.absUtils import absUtils
 
 sys.path.append(str(Path(__file__).resolve().parent.parent / "src"))
-from config import STREAMLIT_AUTH_CONFIG_SECRET_NAME, secret_client
+from config import STREAMLIT_AUTH_BLOB_NAME, STREAMLIT_AUTH_CONTAINER_NAME, Secrets
 
 
 def hash_password(plain_password: str) -> str:
@@ -79,13 +79,15 @@ def prompt_users() -> dict:
 
 
 def main():
-    print(f"Checking that secret '{STREAMLIT_AUTH_CONFIG_SECRET_NAME}' does not already exist...")
+    abs_ds = absUtils(Secrets.ABS_STORAGE_ACCOUNT_NAME_DS, Secrets.ABS_STORAGE_ACCOUNT_KEY_DS)
+
+    print(f"Checking that '{STREAMLIT_AUTH_BLOB_NAME}' does not already exist in '{STREAMLIT_AUTH_CONTAINER_NAME}'...")
     try:
-        secret_client.get_secret(STREAMLIT_AUTH_CONFIG_SECRET_NAME)
+        abs_ds.load_object(STREAMLIT_AUTH_CONTAINER_NAME, STREAMLIT_AUTH_BLOB_NAME)
     except ResourceNotFoundError:
-        print("Secret not found - proceeding with bootstrap.")
+        print("Blob not found - proceeding with bootstrap.")
     else:
-        print(f"Refusing to run: secret '{STREAMLIT_AUTH_CONFIG_SECRET_NAME}' already exists.")
+        print(f"Refusing to run: '{STREAMLIT_AUTH_BLOB_NAME}' already exists in '{STREAMLIT_AUTH_CONTAINER_NAME}'.")
         print("Use update_users.py to modify the existing config.")
         sys.exit(1)
 
@@ -97,12 +99,16 @@ def main():
 
     config = {"credentials": {"usernames": users}, "cookie": cookie}
 
-    print(f"\nAbout to create '{STREAMLIT_AUTH_CONFIG_SECRET_NAME}' with {len(users)} user(s): {', '.join(users)}")
+    print(f"\nAbout to create '{STREAMLIT_AUTH_BLOB_NAME}' in '{STREAMLIT_AUTH_CONTAINER_NAME}' with {len(users)} user(s): {', '.join(users)}")
     if input("Proceed with upload? [y/N]: ").strip().lower() != "y":
         print("Aborted.")
         return
 
-    secret_client.set_secret(STREAMLIT_AUTH_CONFIG_SECRET_NAME, yaml.safe_dump(config))
+    abs_ds.upload_object(
+        data=config,
+        container_name=STREAMLIT_AUTH_CONTAINER_NAME,
+        blob_name=STREAMLIT_AUTH_BLOB_NAME,
+    )
     print("Done.")
 
 
