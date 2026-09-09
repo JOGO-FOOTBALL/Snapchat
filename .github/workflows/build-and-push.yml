@@ -41,5 +41,7 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
             ${{ env.IMAGE }}:latest
+          secrets: |
+            github_token=${{ secrets.GH_PAT }}
           cache-from: type=gha,scope=snapchat
           cache-to: type=gha,mode=max,scope=snapchat

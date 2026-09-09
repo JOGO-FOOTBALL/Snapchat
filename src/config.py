@@ -57,6 +57,15 @@ class Secrets:
         "DatasciencePsqlServerDatabaseProd"
     ).value
 
+    # Azure Blob Storage - DS (used to store the streamlit-authenticator
+    # config, see STREAMLIT_AUTH_CONTAINER_NAME below)
+    ABS_STORAGE_ACCOUNT_NAME_DS = secret_client.get_secret(
+        "DatascienceAzureBlobStorageAccountName"
+    ).value
+    ABS_STORAGE_ACCOUNT_KEY_DS = secret_client.get_secret(
+        "DatascienceAzureBlobStorageAccountKey"
+    ).value
+
 
 # Owned Instagram accounts (kept for reference / channel labels)
 ACCOUNT_CHANNEL = {
@@ -89,13 +98,9 @@ SNAPCHAT_PROFILE_ID = os.environ["SNAPCHAT_PROFILE_ID"]
 SNAPCHAT_TOKEN_URL = "https://accounts.snapchat.com/login/oauth2/access_token"
 
 # streamlit-authenticator config (usernames, bcrypt-hashed passwords, cookie
-# settings) for streamlit_app.py, stored as a single YAML secret in Key Vault
-# rather than in git - see login.py and auth_config/. Fetched lazily (not at
-# import time like the secrets above) since it doesn't exist yet on a brand
-# new environment until auth_config/init_config.py bootstraps it, and the CLI
-# scripts that also import this module don't need it.
-STREAMLIT_AUTH_CONFIG_SECRET_NAME = "SnapchatStreamlitAuthConfig"
-
-
-def get_streamlit_auth_config_yaml() -> str:
-    return secret_client.get_secret(STREAMLIT_AUTH_CONFIG_SECRET_NAME).value
+# settings) for streamlit_app.py, stored as a single YAML blob in Azure Blob
+# Storage rather than in git - see login.py and auth_config/. Own container
+# ("snapchat-app") so this never touches other apps' auth blobs (e.g.
+# expense-claim-generator's "expense-claim-app" container).
+STREAMLIT_AUTH_CONTAINER_NAME = "snapchat-app"
+STREAMLIT_AUTH_BLOB_NAME = "auth/config.yaml"
