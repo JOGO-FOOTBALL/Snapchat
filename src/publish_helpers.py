@@ -223,12 +223,15 @@ def lookup(permalink: str) -> dict:
 
 def publish_slides(
     permalink: str, post: dict, slides: list[dict], username: str,
-    name_prefix: str, post_one: Callable[[str, str], dict],
+    name_prefix: str, post_one: Callable[[str, str, str | None], dict],
     source: str, destination: str,
 ) -> dict:
     """Uploads + publishes each selected slide in order. `post_one(access_token,
-    media_id)` does the destination-specific call (post_story / post_spotlight)
-    and returns its response dict. Saves the result to the DB.
+    media_id, caption)` does the destination-specific call (post_story /
+    post_spotlight) and returns its response dict. `caption` is the source
+    Instagram post's caption - post_story ignores it (Post Story has no
+    caption field), post_spotlight forwards it as `description` when it fits
+    Snap's length limit. Saves the result to the DB.
 
     Acquires an advisory lock and checks for cross-source duplicates before
     calling the Snapchat API. Raises AlreadyPublishedError if already posted."""
@@ -246,7 +249,7 @@ def publish_slides(
                 name=f"{name_prefix}_{post['id']}_{idx}.{ext}", key=key, iv=iv,
             )
             upload_media(access_token, media["add_path"], media["finalize_path"], ciphertext)
-            result = post_one(access_token, media["media_id"])
+            result = post_one(access_token, media["media_id"], post.get("caption"))
             posted.append({"media_id": media["media_id"], "request_id": result.get("request_id")})
 
         now = datetime.now(timezone.utc)
@@ -397,12 +400,13 @@ def render_publisher_page(
 def publish_db_item(
     item: dict, username: str, name_prefix: str,
     source: str, destination: str,
-    post_one: Callable[[str, str], dict] = post_story,
+    post_one: Callable[[str, str, str | None], dict] = lambda access_token, media_id, caption: post_story(access_token, media_id),
 ) -> dict:
     """Uploads + posts one DB-sourced item's own media_url/media_type via
-    `post_one` (post_story by default, or post_spotlight). Acquires an advisory
-    lock and checks for cross-source duplicates before calling the Snapchat API.
-    Saves the result to the DB. Raises AlreadyPublishedError if already posted."""
+    `post_one` (post_story by default, or post_spotlight) - see publish_slides
+    for what `caption` means. Acquires an advisory lock and checks for
+    cross-source duplicates before calling the Snapchat API. Saves the result
+    to the DB. Raises AlreadyPublishedError if already posted."""
     content_id = str(item["id"])
     with publish_lock(content_id, destination):
         access_token = get_access_token()
@@ -416,7 +420,7 @@ def publish_db_item(
             name=f"{name_prefix}_{item['id']}.{ext}", key=key, iv=iv,
         )
         upload_media(access_token, media["add_path"], media["finalize_path"], ciphertext)
-        result = post_one(access_token, media["media_id"])
+        result = post_one(access_token, media["media_id"], item.get("caption"))
 
         now = datetime.now(timezone.utc)
         save_log_entry(
