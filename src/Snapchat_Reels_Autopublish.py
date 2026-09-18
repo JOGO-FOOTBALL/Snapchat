@@ -161,7 +161,7 @@ def _publish_reel(access_token: str, post: dict) -> str:
 
     media = create_media(access_token, "VIDEO", name=f"auto_{post['id']}.mp4", key=key, iv=iv)
     upload_media(access_token, media["add_path"], media["finalize_path"], ciphertext)
-    post_spotlight(access_token, media["media_id"], locale=SPOTLIGHT_LOCALE)
+    post_spotlight(access_token, media["media_id"], locale=SPOTLIGHT_LOCALE, description=post.get("caption"))
     return media["media_id"]
 
 

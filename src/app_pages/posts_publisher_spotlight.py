@@ -22,6 +22,8 @@ render_posts_grid_page(
     destination="spotlight",
     username=username,
     name_prefix=NAME_PREFIX,
-    post_one=lambda access_token, media_id: post_spotlight(access_token, media_id, locale=SPOTLIGHT_LOCALE),
+    post_one=lambda access_token, media_id, caption: post_spotlight(
+        access_token, media_id, locale=SPOTLIGHT_LOCALE, description=caption,
+    ),
     video_only=True,
 )

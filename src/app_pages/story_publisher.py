@@ -16,5 +16,5 @@ render_publisher_page(
     destination="story",
     username=username,
     name_prefix="streamlit_story",
-    post_one=lambda access_token, media_id: post_story(access_token, media_id),
+    post_one=lambda access_token, media_id, caption: post_story(access_token, media_id),
 )
