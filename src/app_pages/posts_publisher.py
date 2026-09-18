@@ -19,5 +19,5 @@ render_posts_grid_page(
     destination="story",
     username=username,
     name_prefix=NAME_PREFIX,
-    post_one=lambda access_token, media_id: post_story(access_token, media_id),
+    post_one=lambda access_token, media_id, caption: post_story(access_token, media_id),
 )
