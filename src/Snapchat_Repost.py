@@ -366,10 +366,14 @@ def post_spotlight(
 ) -> dict:
     """Spotlight is video-only (5-60s mp4) and, unlike Post Story, requires a
     `locale`. Media stays in MEDIA_PROCESSING for a bit after FINALIZE, so
-    retry with backoff before giving up, same as post_story."""
+    retry with backoff before giving up, same as post_story.
+
+    Snap's documented limit for `description` is 160 characters. A caption
+    over that limit is dropped rather than truncated - a mid-sentence cutoff
+    reads worse on a branded account than no caption at all."""
     body = {"media_id": media_id, "locale": locale, "skip_save_to_profile": skip_save_to_profile}
-    if description:
-        body["description"] = description[:160]
+    if description and len(description) <= 160:
+        body["description"] = description
 
     delay = 5.0
     for attempt in range(1, 7):
