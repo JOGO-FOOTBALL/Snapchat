@@ -19,7 +19,9 @@ render_publisher_page(
     destination="spotlight",
     username=username,
     name_prefix="streamlit_spotlight",
-    post_one=lambda access_token, media_id: post_spotlight(access_token, media_id, locale=SPOTLIGHT_LOCALE),
+    post_one=lambda access_token, media_id, caption: post_spotlight(
+        access_token, media_id, locale=SPOTLIGHT_LOCALE, description=caption,
+    ),
     video_only=True,
     video_only_notice="{skipped} image slide(s) skipped - Spotlight is video-only.",
 )
