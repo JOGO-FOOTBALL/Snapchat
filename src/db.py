@@ -85,10 +85,12 @@ def fetch_recent_instagram_stories(ig_user_id: int, lookback_hours: int) -> list
 
 
 @st.cache_data(ttl="5m", show_spinner=False)
-def fetch_instagram_posts_page(ig_user_id: int, offset: int, limit: int, reels_only: bool = False) -> list[dict]:
-    """Newest-first, not time-bounded (unlike Stories) - paginated via
-    offset/limit instead, so the page (see app_pages/posts_publisher.py) can
-    render an initial small batch fast and stream the rest in afterwards
+def fetch_instagram_posts_page(
+    ig_user_id: int, offset: int, limit: int | None, reels_only: bool = False, lookback_days: int | None = None,
+) -> list[dict]:
+    """Newest-first, not time-bounded by default (unlike Stories) - paginated
+    via offset/limit instead, so the page (see app_pages/posts_publisher.py)
+    can render an initial small batch fast and stream the rest in afterwards
     rather than blocking on the live media_url check (see below) for every
     row before showing anything. Skips rows with no media_url. Each row is
     one post; for a CAROUSEL_ALBUM, media_url/thumbnail are the cover slide
@@ -102,7 +104,18 @@ def fetch_instagram_posts_page(ig_user_id: int, offset: int, limit: int, reels_o
     recent posting mix is often mostly image carousels, so a plain "last N
     posts" page can come back with almost no reels even though thousands
     exist further back. Used by the Spotlight variant of the Posts publisher
-    page (video-only, no other type is ever postable there)."""
+    page (video-only, no other type is ever postable there).
+
+    limit=None fetches every remaining row past offset (no SQL LIMIT) - used
+    for the Spotlight page's second batch so a reel further back than a fixed
+    page size still shows up as long as its media_url is still live.
+
+    lookback_days caps the SQL window itself (unlike video_only, which is
+    just a column filter) - without it, "no limit" on an account with
+    thousands of historical reels means thousands of live media_url checks
+    per page load (each an outbound HTTP call with its own timeout), which is
+    both slow and, under that much concurrent load against Instagram's CDN,
+    prone to spurious failures that hide reels whose link is actually fine."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -114,10 +127,14 @@ def fetch_instagram_posts_page(ig_user_id: int, offset: int, limit: int, reels_o
                 WHERE ig_user_id = %s
                   {"AND media_type IN ('VIDEO', 'REEL')" if reels_only else ""}
                   AND media_url IS NOT NULL
+                  {"AND timestamp_utc >= NOW() - make_interval(days => %s)" if lookback_days is not None else ""}
                 ORDER BY timestamp_utc DESC
-                LIMIT %s OFFSET %s
+                OFFSET %s
+                {"LIMIT %s" if limit is not None else ""}
                 """,
-                (ig_user_id, limit, offset),
+                tuple(
+                    v for v in (ig_user_id, lookback_days, offset, limit) if v is not None
+                ),
             )
             return _filter_live_media_url([dict(row) for row in cur.fetchall()])
     finally:

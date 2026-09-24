@@ -12,6 +12,7 @@ from Snapchat_Repost import post_spotlight
 
 NAME_PREFIX = "post_db"
 SPOTLIGHT_LOCALE = "en_US"
+LOOKBACK_DAYS = 90
 
 username = st.session_state["username"]
 
@@ -26,4 +27,6 @@ render_posts_grid_page(
         access_token, media_id, locale=SPOTLIGHT_LOCALE, description=caption,
     ),
     video_only=True,
+    total=None,
+    lookback_days=LOOKBACK_DAYS,
 )

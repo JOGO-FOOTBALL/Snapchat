@@ -532,7 +532,8 @@ def render_posts_grid_page(
     post_one: Callable[[str, str], dict],
     video_only: bool = False,
     first_batch: int = 15,
-    total: int = 100,
+    total: int | None = 100,
+    lookback_days: int | None = None,
 ) -> None:
     """Renders the Posts publisher grid (see app_pages/posts_publisher.py and
     posts_publisher_spotlight.py, its Story and Spotlight variants) - browses
@@ -542,7 +543,13 @@ def render_posts_grid_page(
 
     Loads in two batches: the live media_url check in db.py is what makes a
     full fetch slow, so a small first batch renders fast and the rest streams
-    in right after instead of blocking the whole grid on it.
+    in right after instead of blocking the whole grid on it. total=None
+    fetches every remaining row past first_batch instead of capping at a
+    fixed page size - slower, but nothing with a live media_url is hidden
+    just for sitting further back than the cap. Pair total=None with
+    lookback_days (see db.fetch_instagram_posts_page) to bound the SQL window
+    itself - otherwise "no cap" on an account with years of history means
+    thousands of live media_url checks per load.
 
     Carousels get two actions (push the cover only vs. fetch+push every
     slide via the Graph API, see publish_slides) when video_only is False.
@@ -650,7 +657,9 @@ def render_posts_grid_page(
     # cards in _render_card) - Spotlight's recent posting mix is often mostly
     # image carousels, so a plain "last N posts" page can come back with
     # almost no reels even though thousands exist further back.
-    first_posts = fetch_instagram_posts_page(ig_user_id, 0, first_batch, reels_only=video_only)
+    first_posts = fetch_instagram_posts_page(
+        ig_user_id, 0, first_batch, reels_only=video_only, lookback_days=lookback_days,
+    )
     if not first_posts:
         st.info("Nothing found.")
 
@@ -662,10 +671,16 @@ def render_posts_grid_page(
         for post in first_posts:
             _render_card(post, log)
 
-        if len(first_posts) == first_batch:
+        # Always fetches the rest, regardless of how many of the first batch
+        # came back live - len(first_posts) is post-live-filter, so any dead
+        # link in that small first batch (the common case) would silently
+        # drop it below first_batch and skip the second fetch entirely, even
+        # though plenty more (live) rows exist past offset first_batch.
+        if total is None or total > first_batch:
             with st.spinner("Loading more..."):
+                rest_limit = None if total is None else total - first_batch
                 rest_posts = fetch_instagram_posts_page(
-                    ig_user_id, first_batch, total - first_batch, reels_only=video_only,
+                    ig_user_id, first_batch, rest_limit, reels_only=video_only, lookback_days=lookback_days,
                 )
             for post in rest_posts:
                 _render_card(post, log)
