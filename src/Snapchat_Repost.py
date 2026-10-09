@@ -76,6 +76,21 @@ BUSINESS_API_BASE = "https://businessapi.snapchat.com"
 # ("Media size is too large"). Leave headroom for that framing overhead.
 MAX_CHUNK_SIZE = 31 * 1024 * 1024
 
+# (connect, read) timeouts in seconds for Business API calls. Snap regularly
+# takes over a minute to answer FINALIZE and the Post Story/Spotlight calls
+# (it's processing the media server-side), so a flat 60s read timeout was
+# failing posts that would have gone through. Connect stays short so a real
+# outage still fails fast.
+SNAP_TIMEOUT = (10, 180)
+SNAP_UPLOAD_TIMEOUT = (10, 300)
+
+# A timeout on the publish call itself is deliberately NOT retried: Snap may
+# have accepted the post and only the response got lost, so a blind retry
+# risks a duplicate Snap. The error tells the user to check first instead.
+PUBLISH_TIMEOUT_STEP = (
+    "Post {destination} - it may still have gone live, check Snapchat before posting again"
+)
+
 # Snapchat Stories are full-bleed 9:16. Instagram source media rarely is, so
 # source media gets letterboxed onto a blurred, scaled copy of itself instead
 # of being center-cropped - avoids cutting off text/logos baked into the
@@ -92,12 +107,17 @@ def _full_url(base: str, path_or_url: str) -> str:
     return path_or_url if path_or_url.startswith("http") else f"{base}{path_or_url}"
 
 
-def _snap_post(path_or_url: str, access_token: str, **kwargs) -> requests.Response:
-    return SNAP_SESSION.post(
-        _full_url(BUSINESS_API_BASE, path_or_url),
-        headers={"Authorization": f"Bearer {access_token}"},
-        **kwargs,
-    )
+def _snap_post(path_or_url: str, access_token: str, step: str, **kwargs) -> requests.Response:
+    """`step` names the call in the error if Snap doesn't answer in time, so a
+    timeout says which part of the publish flow it hit."""
+    try:
+        return SNAP_SESSION.post(
+            _full_url(BUSINESS_API_BASE, path_or_url),
+            headers={"Authorization": f"Bearer {access_token}"},
+            **kwargs,
+        )
+    except requests.Timeout as e:
+        raise RuntimeError(f"Snapchat didn't respond in time during {step}: {e}") from e
 
 
 # ---------------- Instagram (source) ----------------
@@ -157,14 +177,46 @@ def _normalize_permalink(permalink: str) -> str:
     return permalink.split("?", 1)[0].split("#", 1)[0].rstrip("/")
 
 
+def _post_id_from_db(shortcode: str) -> str | None:
+    """Post id for a shortcode from socials_analytics.instagram_posts (filled
+    by the scraper for all of 433's accounts), or None if it isn't there (yet).
+    Imported lazily so this library doesn't pull in db/streamlit at import."""
+    from db import get_connection
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT post_id FROM socials_analytics.instagram_posts "
+                "WHERE strpos(permalink, %s) > 0 LIMIT 1",
+                (f"/{shortcode}/",),
+            )
+            row = cur.fetchone()
+            return str(row["post_id"]) if row else None
+    finally:
+        conn.close()
+
+
 def find_post_by_permalink(permalink: str, max_pages: int = 20) -> dict:
-    """Instagram's Graph API has no lookup-by-permalink endpoint, so this
-    pages through each of 433's IG accounts' recent media until it finds a
-    matching permalink - all accounts (config.ALL_IG_USER_IDS), not just Main,
+    """Instagram's Graph API has no lookup-by-permalink endpoint, so the post
+    id is first looked up in the scraper's DB table (~1s, no age limit).
+    Only if it isn't there - e.g. posted minutes ago, before the scraper's
+    next run - does this page through each of 433's IG accounts' recent media
+    until it finds a matching permalink: all accounts (config.ALL_IG_USER_IDS),
     so the URL-based publisher pages work regardless of which channel a
-    permalink belongs to."""
+    permalink belongs to, Main first since that's where nearly every
+    permalink comes from (otherwise a Main post waits behind ~1000 NL posts)."""
     target = _normalize_permalink(permalink)
-    for uid in ALL_IG_USER_IDS:
+    try:
+        post_id = _post_id_from_db(target)
+    except Exception as e:
+        logger.warning(f"DB permalink lookup failed, scanning Instagram instead: {e}")
+        post_id = None
+    if post_id:
+        return get_ig_json(f"/{post_id}", {"fields": FIELDS})
+
+    main_first = sorted(ALL_IG_USER_IDS, key=lambda uid: str(uid) not in IG_USER_IDS)
+    for uid in main_first:
         next_url = f"/{uid}/media"
         for _ in range(max_pages):
             if not next_url:
@@ -291,13 +343,14 @@ def create_media(access_token: str, media_type: str, name: str, key: bytes, iv: 
     r = _snap_post(
         f"/v1/public_profiles/{SNAPCHAT_PROFILE_ID}/media",
         access_token,
+        "Create Media",
         json={
             "type": media_type,  # "VIDEO" or "IMAGE"
             "name": name,
             "key": base64.b64encode(key).decode(),
             "iv": base64.b64encode(iv).decode(),
         },
-        timeout=60,
+        timeout=SNAP_TIMEOUT,
     )
     if not r.ok:
         raise RuntimeError(f"Create Media failed ({r.status_code}): {r.text}")
@@ -316,9 +369,10 @@ def upload_media(access_token: str, add_path: str, finalize_path: str, ciphertex
         r = _snap_post(
             add_path,
             access_token,
+            f"upload (part {part_number})",
             data={"action": "ADD", "part_number": str(part_number)},
             files={"file": ("chunk", chunk, "application/octet-stream")},
-            timeout=120,
+            timeout=SNAP_UPLOAD_TIMEOUT,
         )
         if not r.ok:
             raise RuntimeError(f"Upload (part {part_number}) failed ({r.status_code}): {r.text}")
@@ -326,8 +380,9 @@ def upload_media(access_token: str, add_path: str, finalize_path: str, ciphertex
     r = _snap_post(
         finalize_path,
         access_token,
+        "Finalize",
         files={"action": (None, "FINALIZE")},  # forces multipart/form-data, matching the ADD calls
-        timeout=60,
+        timeout=SNAP_TIMEOUT,
     )
     if not r.ok:
         raise RuntimeError(f"Finalize failed ({r.status_code}): {r.text}")
@@ -341,8 +396,9 @@ def post_story(access_token: str, media_id: str) -> dict:
         r = _snap_post(
             f"/v1/public_profiles/{SNAPCHAT_PROFILE_ID}/stories",
             access_token,
+            PUBLISH_TIMEOUT_STEP.format(destination="Story"),
             json={"media_id": media_id},
-            timeout=60,
+            timeout=SNAP_TIMEOUT,
         )
         if r.ok:
             return r.json()
@@ -357,6 +413,39 @@ def post_story(access_token: str, media_id: str) -> dict:
         raise RuntimeError(f"Post Story failed ({r.status_code}): {r.text}")
 
 
+SPOTLIGHT_DESCRIPTION_MAX = 160
+# Instagram handle rules: letters, digits, '.' and '_'. A trailing '.' is
+# sentence punctuation ("thanks @433."), not part of the handle.
+_MENTION_RE = re.compile(r"(?<![\w.])@([A-Za-z0-9._]+)")
+# 433's own handles (lowercase) - it's 433's own profile posting, so tagging
+# them adds nothing.
+_SKIP_MENTIONS = {"@433", "@433womenfc", "@433nl"}
+
+
+def _spotlight_description(caption: str | None) -> str | None:
+    """The full caption if it fits Spotlight's limit; otherwise just its
+    @mentions (deduped, in order, minus _SKIP_MENTIONS, as many as fit), or
+    None if there are none."""
+    if not caption:
+        return None
+    if len(caption) <= SPOTLIGHT_DESCRIPTION_MAX:
+        return caption
+
+    mentions = []
+    for handle in _MENTION_RE.findall(caption):
+        mention = "@" + handle.rstrip(".")
+        if mention != "@" and mention.lower() not in _SKIP_MENTIONS and mention not in mentions:
+            mentions.append(mention)
+
+    text = ""
+    for mention in mentions:
+        candidate = f"{text} {mention}" if text else mention
+        if len(candidate) > SPOTLIGHT_DESCRIPTION_MAX:
+            break
+        text = candidate
+    return text or None
+
+
 def post_spotlight(
     access_token: str,
     media_id: str,
@@ -369,19 +458,22 @@ def post_spotlight(
     retry with backoff before giving up, same as post_story.
 
     Snap's documented limit for `description` is 160 characters. A caption
-    over that limit is dropped rather than truncated - a mid-sentence cutoff
-    reads worse on a branded account than no caption at all."""
+    over that limit isn't truncated - a mid-sentence cutoff reads worse on a
+    branded account than no caption at all - but its @mentions are still
+    posted on their own, so the credit to the source stays (see
+    _spotlight_description)."""
     body = {"media_id": media_id, "locale": locale, "skip_save_to_profile": skip_save_to_profile}
-    if description and len(description) <= 160:
-        body["description"] = description
+    if text := _spotlight_description(description):
+        body["description"] = text
 
     delay = 5.0
     for attempt in range(1, 7):
         r = _snap_post(
             f"/v1/public_profiles/{SNAPCHAT_PROFILE_ID}/spotlights",
             access_token,
+            PUBLISH_TIMEOUT_STEP.format(destination="Spotlight"),
             json=body,
-            timeout=60,
+            timeout=SNAP_TIMEOUT,
         )
         if r.ok:
             return r.json()
