@@ -12,7 +12,7 @@ from typing import Callable
 
 import streamlit as st
 
-from config import ACCOUNT_CHANNEL, IG_USER_IDS
+from config import ACCOUNT_CHANNEL, IG_USER_IDS, SNAPCHAT_PROFILE_URL
 from db import get_connection
 from Snapchat_Repost import (
     FIELDS,
@@ -30,6 +30,9 @@ from Snapchat_Repost import (
     _spotlight_description,
 )
 from db import fetch_instagram_posts_page
+from YouTube_Repost import YOUTUBE_WATCH_URL, get_youtube_access_token, upload_short
+
+YOUTUBE_DESTINATION = "youtube"
 
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "Logo433.png"
 
@@ -273,6 +276,56 @@ def publish_slides(
     }
 
 
+def publish_youtube_slides(
+    permalink: str, post: dict, slides: list[dict], username: str, source: str,
+) -> dict:
+    """YouTube counterpart of publish_slides for the By Url Spotlight page:
+    each selected video slide becomes its own Short (normally just the one
+    reel). Logged under destination 'youtube' with the Short ids as the
+    child rows. Raises AlreadyPublishedError if already posted."""
+    videos = [s for s in slides if _is_video(s)]
+    if not videos:
+        raise ValueError("No video slides selected - YouTube Shorts are video-only.")
+    with publish_lock(post["id"], YOUTUBE_DESTINATION):
+        access_token = get_youtube_access_token()
+        uploaded = []
+        for item in videos:
+            processed, _ = process_slide(item["url"], item["media_type"])
+            uploaded.append({"media_id": upload_short(access_token, processed, post.get("caption"))})
+
+        now = datetime.now(timezone.utc)
+        save_log_entry(
+            post["id"], source, YOUTUBE_DESTINATION,
+            status="posted",
+            permalink=permalink,
+            published_by=username,
+            snapchat_media_id=uploaded[0]["media_id"],
+            posted_at=now,
+            snaps=uploaded,
+        )
+    return {"status": "posted", "posted_at": now.isoformat(), "published_by": username, "videos": uploaded}
+
+
+def _publish_and_rerun(spinner: str, targets: list[tuple[str, Callable[[], object]]]) -> None:
+    """Runs each (label, publish) in order - one failing doesn't stop the
+    rest - then reruns to show the new state. No rerun on failure, so the
+    error stays visible (the next interaction shows what did go out).
+    AlreadyPublishedError just counts as done."""
+    errors = []
+    with st.spinner(spinner):
+        for label, publish in targets:
+            try:
+                publish()
+            except AlreadyPublishedError:
+                pass
+            except Exception as e:
+                errors.append(f"{label}: {e}")
+    if errors:
+        st.error("Posting failed - " + " | ".join(errors))
+    else:
+        st.rerun()
+
+
 def render_publisher_page(
     *,
     title: str,
@@ -285,10 +338,16 @@ def render_publisher_page(
     post_one: Callable[[str, str], dict],
     video_only: bool = False,
     video_only_notice: str = "",
+    youtube: bool = False,
 ) -> None:
     """Renders one full publisher page: permalink form, per-post preview with
     per-slide checkboxes (checked by default), and a publish button. `post_one`
-    is the destination-specific single-slide publish call."""
+    is the destination-specific single-slide publish call.
+
+    youtube=True (Spotlight page) swaps the single publish button for
+    Snapchat / YouTube / Push Both, same as render_posts_grid_page - each
+    destination tracked separately, so a post already on one can still go to
+    the other."""
     st.session_state.setdefault(session_key, {})
     found = st.session_state[session_key]
 
@@ -314,6 +373,7 @@ def render_publisher_page(
                 found[permalink] = lookup(permalink)
 
     log = load_log(destination)
+    yt_log = load_log(YOUTUBE_DESTINATION) if youtube else {}
 
     for permalink, entry in found.items():
         with st.container(border=True):
@@ -337,10 +397,20 @@ def render_publisher_page(
             st.caption(f"{post.get('media_type')} · Caption on Snapchat: {snap_caption}")
 
             already = log.get(post["id"])
-            if already and already.get("status") == "posted":
+            on_dest = bool(already and already.get("status") == "posted")
+            yt_already = yt_log.get(post["id"])
+            on_youtube = bool(yt_already and yt_already.get("status") == "posted")
+            if on_dest:
                 by = already.get("published_by")
                 suffix = f" by {by}" if by else ""
-                st.success(f"Already posted on {already['posted_at']}{suffix} · {already['snap_count']} snap(s)")
+                where = " to Snapchat" if youtube else ""
+                st.success(f"Already posted{where} on {already['posted_at']}{suffix} · {already['snap_count']} snap(s)")
+            if on_youtube:
+                by = yt_already.get("published_by")
+                suffix = f" by {by}" if by else ""
+                url = YOUTUBE_WATCH_URL.format(video_id=yt_already["snapchat_media_id"])
+                st.success(f"Already posted to YouTube on {yt_already['posted_at']}{suffix} · [watch]({url})")
+            if on_dest and (on_youtube or not youtube):
                 continue
 
             if not all_slides:
@@ -366,10 +436,15 @@ def render_publisher_page(
                 st.warning("This post has no video content to publish here.")
                 continue
 
+            # Letterboxing a video (ffmpeg) can take tens of seconds on a cache
+            # miss, and process_slide's own spinner is off - without this the
+            # card just looks finished with no slides or buttons.
+            with st.spinner(f"Preparing {len(slides)} slide preview(s)..."):
+                processed_slides = [process_slide(s["url"], s["media_type"]) for s in slides]
+
             selected_slides = []
             with st.container(horizontal=True):
-                for i, s in enumerate(slides, start=1):
-                    processed, is_video = process_slide(s["url"], s["media_type"])
+                for i, (s, (processed, is_video)) in enumerate(zip(slides, processed_slides), start=1):
                     with st.container(width=170):
                         if is_video:
                             st.video(processed)
@@ -385,7 +460,38 @@ def render_publisher_page(
             if not selected_slides:
                 st.caption("No slides selected - check at least 1 slide to post.")
 
-            if st.button(
+            if youtube:
+                count = f"({len(selected_slides)}/{len(slides)})"
+                push_snap = ("Snapchat", lambda: publish_slides(
+                    permalink, post, selected_slides, username, name_prefix, post_one, source, destination,
+                ))
+                push_yt = ("YouTube", lambda: publish_youtube_slides(
+                    permalink, post, selected_slides, username, source,
+                ))
+                spot_clicked = yt_clicked = both_clicked = False
+                with st.container(horizontal=True):
+                    if not on_dest:
+                        spot_clicked = st.button(
+                            f"Snapchat {count}", key=f"{session_key}_spot_{permalink}",
+                            disabled=not selected_slides,
+                        )
+                    if not on_youtube:
+                        yt_clicked = st.button(
+                            f"YouTube {count}", key=f"{session_key}_yt_{permalink}",
+                            disabled=not selected_slides,
+                        )
+                    if not on_dest and not on_youtube:
+                        both_clicked = st.button(
+                            "Push Both", key=f"{session_key}_both_{permalink}", icon=":material/send:",
+                            type="primary", disabled=not selected_slides,
+                        )
+                if both_clicked:
+                    _publish_and_rerun("Posting to Snapchat and YouTube...", [push_snap, push_yt])
+                elif spot_clicked:
+                    _publish_and_rerun("Posting to Snapchat...", [push_snap])
+                elif yt_clicked:
+                    _publish_and_rerun("Uploading to YouTube...", [push_yt])
+            elif st.button(
                 f"Post ({len(selected_slides)}/{len(slides)} slide(s))",
                 key=f"{session_key}_publish_{permalink}", icon=":material/send:", type="primary",
                 disabled=not selected_slides,
@@ -448,6 +554,32 @@ def publish_db_item(
         "media_id": media["media_id"],
         "request_id": result.get("request_id"),
     }
+
+
+def publish_youtube_item(item: dict, username: str, source: str) -> dict:
+    """Uploads one DB-sourced video item to YouTube as a Short - the same
+    letterboxed 9:16 mp4 Spotlight gets (process_slide is cached, so this
+    reuses the Spotlight push's processing when both buttons are used).
+    Logged in snapchat.publish_log under destination 'youtube', with the
+    YouTube video id in snapchat_media_id (the table predates YouTube).
+    Raises AlreadyPublishedError if already posted."""
+    content_id = str(item["id"])
+    with publish_lock(content_id, YOUTUBE_DESTINATION):
+        access_token = get_youtube_access_token()
+        processed, _ = process_slide(item["media_url"], item["media_type"])
+        video_id = upload_short(access_token, processed, item.get("caption"))
+
+        now = datetime.now(timezone.utc)
+        save_log_entry(
+            content_id, source, YOUTUBE_DESTINATION,
+            status="posted",
+            permalink=item.get("permalink"),
+            published_by=username,
+            snapchat_media_id=video_id,
+            posted_at=now,
+        )
+
+    return {"status": "posted", "posted_at": now.isoformat(), "published_by": username, "video_id": video_id}
 
 
 def render_db_browser_page(
@@ -542,6 +674,7 @@ def render_posts_grid_page(
     first_batch: int = 15,
     total: int | None = 100,
     lookback_days: int | None = None,
+    youtube: bool = False,
 ) -> None:
     """Renders the Posts publisher grid (see app_pages/posts_publisher.py and
     posts_publisher_spotlight.py, its Story and Spotlight variants) - browses
@@ -564,7 +697,56 @@ def render_posts_grid_page(
     When True (Spotlight - video-only, no multi-slide concept), non-video
     posts are skipped with a note instead - CAROUSEL_ALBUM is its own
     media_type distinct from VIDEO/REEL, so this also naturally excludes
-    carousels without a separate flag for it."""
+    carousels without a separate flag for it.
+
+    youtube=True (Spotlight variant) gives each video card a second button
+    that uploads the same reel to YouTube as a Short (publish_youtube_item),
+    tracked separately from the Snapchat destination - pushing to one doesn't
+    mark it posted on the other."""
+
+    def _render_push_pair(item: dict, item_key: str, already: dict | None, yt_already: dict | None) -> None:
+        """Snapchat + YouTube buttons side by side, with "Push Both" (only
+        while posted on neither) on the row below. Once on Snapchat its button
+        is dropped and YouTube fills the row; once on YouTube its button
+        becomes a check linking to the Short ("YouTube & Snapchat" when on
+        both).
+
+        The Snapchat/YouTube row is always rendered (YouTube's half always
+        has a button or check), so it lines up across the grid - an optional row above it would collapse
+        when empty and shift it. Clicks are handled after the buttons, so a
+        spinner or error renders below them instead of inside the row."""
+        on_spotlight = bool(already and already.get("status") == "posted")
+        on_youtube = bool(yt_already and yt_already.get("status") == "posted")
+        push_spotlight = ("Snapchat", lambda: publish_db_item(
+            item, username, name_prefix, source, destination, post_one,
+        ))
+        push_youtube = ("YouTube", lambda: publish_youtube_item(item, username, source))
+        both_clicked = spot_clicked = yt_clicked = False
+
+        with st.container(horizontal=True, gap="small", key=f"{name_prefix}_duo_{item_key}"):
+            # Already on Snapchat: no check, the YouTube half takes the full row.
+            if not on_spotlight:
+                with st.container(key=f"{name_prefix}_half_spot_{item_key}"):
+                    spot_clicked = st.button("Snapchat", key=f"{name_prefix}_spot_{item_key}")
+            with st.container(key=f"{name_prefix}_half_yt_{item_key}"):
+                if on_youtube:
+                    url = YOUTUBE_WATCH_URL.format(video_id=yt_already["snapchat_media_id"])
+                    also = f" & [Snapchat]({SNAPCHAT_PROFILE_URL})" if on_spotlight else ""
+                    st.caption(f":material/check_circle: [YouTube]({url}){also}")
+                else:
+                    yt_clicked = st.button("YouTube", key=f"{name_prefix}_yt_{item_key}")
+
+        if not on_spotlight and not on_youtube:
+            both_clicked = st.button(
+                "Push Both", key=f"{name_prefix}_both_{item_key}", icon=":material/send:", type="primary",
+            )
+
+        if both_clicked:
+            _publish_and_rerun("Posting to Snapchat and YouTube...", [push_spotlight, push_youtube])
+        elif spot_clicked:
+            _publish_and_rerun("Posting to Snapchat...", [push_spotlight])
+        elif yt_clicked:
+            _publish_and_rerun("Uploading to YouTube...", [push_youtube])
 
     def _render_card(post: dict, log: dict) -> None:
         item_key = str(post["post_id"])
@@ -594,6 +776,10 @@ def render_posts_grid_page(
                 # (see _normalize_permalink in Snapchat_Repost.py).
                 permalink = (item.get("permalink") or "").replace("/reel/", "/p/")
                 st.caption(f"[Link]({permalink})")
+
+            if youtube and is_video:
+                _render_push_pair(item, item_key, already, yt_log.get(item_key))
+                return
 
             if already and already.get("status") == "posted":
                 st.caption(":material/check_circle: already posted")
@@ -660,6 +846,7 @@ def render_posts_grid_page(
             st.rerun()
 
     log = load_log(destination)
+    yt_log = load_log(YOUTUBE_DESTINATION) if youtube else {}
 
     # video_only also filters at the SQL level (not just hiding non-video
     # cards in _render_card) - Spotlight's recent posting mix is often mostly
