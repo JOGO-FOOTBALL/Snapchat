@@ -41,11 +41,11 @@ gives access to five pages:
 
 | Page | File | What it does |
 |---|---|---|
+| Posts publisher - Reel | `app_pages/posts_publisher_spotlight.py` | The app's start page. Same grid as Posts publisher - Story below, filtered to Reels/videos only; each reel has **Snapchat** (Spotlight), **YouTube** (Short, see [YouTube Shorts](#youtube-shorts)) and **Push Both** buttons. |
 | Posts publisher - Story | `app_pages/posts_publisher.py` | Browses recent Instagram posts (from a Postgres table populated by a separate scraper, see `db.py`) and pushes them to Snapchat **Story**. Carousels offer "push cover slide" or "push all slides". |
-| Posts publisher - Spotlight | `app_pages/posts_publisher_spotlight.py` | Same grid, filtered to Reels/videos only, pushes to **Spotlight**. |
 | Stories publisher | `app_pages/stories_publisher.py` | Browses 433's own recent Instagram *Stories* (last 24h) from the same Postgres table and pushes selected ones to Snapchat Story. |
 | Story Publisher - By Url | `app_pages/story_publisher.py` | Paste one or more Instagram permalinks, preview every slide, pick which to post, publish to Story. Works for any post the Graph API can still find, not just what's in the DB. |
-| Spotlight Publisher - By Url | `app_pages/spotlight_publisher.py` | Same permalink-based flow, publishing to Spotlight (video slides only). |
+| Reel Publisher - By Url | `app_pages/spotlight_publisher.py` | Same permalink-based flow for reels (video slides only), with **Snapchat** (Spotlight), **YouTube** and **Push Both** buttons. |
 
 Shared UI/publishing logic for all five pages lives in
 `src/publish_helpers.py`. Every publish action is logged to a JSON file
@@ -69,6 +69,24 @@ run:
 
 Supports `--dry-run` to log what would be published without actually
 posting. Run via Docker Compose: `docker compose run --rm reels-autopublish`.
+
+## YouTube Shorts
+
+The Reel posts grid (and the Reel Publisher - By Url page) can also upload a reel to 433's YouTube channel as
+a Short (`src/YouTube_Repost.py`, YouTube Data API v3 resumable upload). It
+uploads the same letterboxed 1080x1920 mp4 Spotlight gets; title = first
+caption line (max 100 chars), description = full caption. Logged
+in `snapchat.publish_log` with `destination='youtube'` (video id in
+`snapchat_media_id`), independent of the Spotlight status.
+
+- Auth reuses meta-analytics' Google Cloud OAuth client (Key Vault
+  `SocialsAnalyticsYoutubeOauthClientId/Secret`) with its own refresh token
+  for the `youtube.upload` scope: run `python auth_config/youtube_refresh_token.py`
+  and set `YOUTUBE_UPLOAD_REFRESH_TOKEN` in the environment.
+- `YOUTUBE_PRIVACY_STATUS` (default `public`). Until the Google Cloud project
+  passes YouTube's API audit, YouTube forces uploads to private regardless.
+- Quota: an upload costs ~1600 of the project's 10,000 units/day (~6/day),
+  shared with meta-analytics on the same project.
 
 ## Where the data comes from
 
