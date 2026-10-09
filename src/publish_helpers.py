@@ -27,6 +27,7 @@ from Snapchat_Repost import (
     upload_media,
     post_story,
     get_access_token,
+    _spotlight_description,
 )
 from db import fetch_instagram_posts_page
 
@@ -326,7 +327,14 @@ def render_publisher_page(
                 continue
 
             post, all_slides = entry["post"], entry["slides"]
-            st.caption(f"{post.get('media_type')} · {(post.get('caption') or '')[:150]}")
+            # What actually goes out, not the raw Instagram caption - a long
+            # caption is replaced by its @mentions on Spotlight (see
+            # _spotlight_description), and Story has no caption field at all.
+            if destination == "spotlight":
+                snap_caption = _spotlight_description(post.get("caption")) or "(no caption)"
+            else:
+                snap_caption = "(Story has no caption)"
+            st.caption(f"{post.get('media_type')} · Caption on Snapchat: {snap_caption}")
 
             already = log.get(post["id"])
             if already and already.get("status") == "posted":
