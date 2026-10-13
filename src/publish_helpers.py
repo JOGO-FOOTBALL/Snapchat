@@ -28,6 +28,7 @@ from Snapchat_Repost import (
     post_story,
     get_access_token,
     _spotlight_description,
+    redact_tokens,
 )
 from db import fetch_instagram_posts_page
 from YouTube_Repost import YOUTUBE_WATCH_URL, get_youtube_access_token, upload_short
@@ -222,7 +223,7 @@ def lookup(permalink: str) -> dict:
         slides = extract_media_items(post)
         return {"post": post, "slides": slides, "error": None}
     except Exception as e:
-        return {"post": None, "slides": [], "error": str(e)}
+        return {"post": None, "slides": [], "error": redact_tokens(str(e))}
 
 
 def publish_slides(
@@ -319,7 +320,7 @@ def _publish_and_rerun(spinner: str, targets: list[tuple[str, Callable[[], objec
             except AlreadyPublishedError:
                 pass
             except Exception as e:
-                errors.append(f"{label}: {e}")
+                errors.append(f"{label}: {redact_tokens(str(e))}")
     if errors:
         st.error("Posting failed - " + " | ".join(errors))
     else:
@@ -505,10 +506,10 @@ def render_publisher_page(
                         st.success(f"Posted - {len(result['snaps'])} snap(s)")
                         st.rerun()
                     except AlreadyPublishedError as e:
-                        st.info(str(e))
+                        st.info(redact_tokens(str(e)))
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Posting failed: {e}")
+                        st.error(f"Posting failed: {redact_tokens(str(e))}")
 
 
 def publish_db_item(
@@ -658,7 +659,7 @@ def render_db_browser_page(
                 except AlreadyPublishedError:
                     st.info(f"{item_key} was already posted")
                 except Exception as e:
-                    st.error(f"Failed to post {item_key}: {e}")
+                    st.error(f"Failed to post {item_key}: {redact_tokens(str(e))}")
 
 
 def render_posts_grid_page(
@@ -793,10 +794,10 @@ def render_posts_grid_page(
                             publish_db_item(item, username, name_prefix, source, destination, post_one)
                             st.rerun()
                         except AlreadyPublishedError as e:
-                            st.info(str(e))
+                            st.info(redact_tokens(str(e)))
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Failed to post: {e}")
+                            st.error(f"Failed to post: {redact_tokens(str(e))}")
                 return
 
             if st.button("Push cover slide", key=f"{name_prefix}_cover_{item_key}", icon=":material/image:"):
@@ -805,10 +806,10 @@ def render_posts_grid_page(
                         publish_db_item(item, username, name_prefix, source, destination, post_one)
                         st.rerun()
                     except AlreadyPublishedError as e:
-                        st.info(str(e))
+                        st.info(redact_tokens(str(e)))
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Failed to post: {e}")
+                        st.error(f"Failed to post: {redact_tokens(str(e))}")
 
             if st.button(
                 "Push all slides", key=f"{name_prefix}_all_{item_key}",
@@ -829,10 +830,10 @@ def render_posts_grid_page(
                             )
                             st.rerun()
                         except AlreadyPublishedError as e:
-                            st.info(str(e))
+                            st.info(redact_tokens(str(e)))
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Failed to post: {e}")
+                            st.error(f"Failed to post: {redact_tokens(str(e))}")
 
     with st.container(horizontal=True, vertical_alignment="center"):
         if LOGO_PATH.exists():
