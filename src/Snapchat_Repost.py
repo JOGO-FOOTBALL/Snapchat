@@ -39,6 +39,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 from cryptography.hazmat.primitives import padding
@@ -121,12 +122,51 @@ def _snap_post(path_or_url: str, access_token: str, step: str, **kwargs) -> requ
 
 
 # ---------------- Instagram (source) ----------------
+# Secret-bearing values as a query param (access_token=...) or JSON field
+# ("refresh_token": "..."), plus Authorization-style "Bearer ...". upload_id
+# is YouTube's resumable-upload session key, which is in the upload URL.
+_SECRET_PARAM_RE = re.compile(
+    r"""((?:access_token|refresh_token|client_secret|upload_id)["']?\s*[=:]\s*["']?)[^&\s#'",}]+"""
+)
+_BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/-]+=*")
+
+
+def redact_tokens(text: str) -> str:
+    """Masks tokens/secrets in `text`. requests puts the full request URL in
+    its error messages, and error text ends up on screen in the app."""
+    return _BEARER_RE.sub(r"\1***", _SECRET_PARAM_RE.sub(r"\1***", text))
+
+
+def _strip_access_token(url: str) -> str:
+    """Graph API paging links (`paging.next`) embed the access token as a
+    query param; drop it so the token only ever travels in the header."""
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "access_token"]
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
 def get_ig_json(url_or_path: str, params: dict | None = None, timeout: int = 60) -> dict:
+    """GET against the Graph API. The token goes in the Authorization header,
+    never the URL, and errors are re-raised as a RuntimeError carrying Meta's
+    own error message, with any token in it masked - error text is shown to
+    users in the Streamlit app."""
     path = url_or_path if url_or_path.startswith("http") else "/" + url_or_path.lstrip("/")
-    r = IG_SESSION.get(
-        _full_url(GRAPH, path), params={"access_token": ACCESS_TOKEN, **(params or {})}, timeout=timeout
-    )
-    r.raise_for_status()
+    url = _strip_access_token(_full_url(GRAPH, path))
+    try:
+        r = IG_SESSION.get(
+            url, params=params, headers={"Authorization": f"Bearer {ACCESS_TOKEN}"}, timeout=timeout,
+        )
+    except requests.RequestException as e:
+        raise RuntimeError(redact_tokens(f"Instagram API request failed: {e}")) from None
+    if not r.ok:
+        try:
+            detail = r.json().get("error", {}).get("message")
+        except ValueError:
+            detail = None
+        where = urlsplit(url).path
+        raise RuntimeError(redact_tokens(
+            f"Instagram API error {r.status_code} on {where}" + (f": {detail}" if detail else "")
+        ))
     return r.json()
 
 
@@ -245,7 +285,11 @@ def get_access_token() -> str:
     r.raise_for_status()
     data = r.json()
     if "access_token" not in data:
-        raise RuntimeError(f"Snapchat token refresh failed: {data}")
+        # Only Snap's error fields - never the raw response, which could
+        # carry a (new) refresh_token.
+        raise RuntimeError(
+            f"Snapchat token refresh failed: {data.get('error')} {data.get('error_description') or ''}".strip()
+        )
     if data.get("refresh_token") and data["refresh_token"] != SNAPCHAT_REFRESH_TOKEN:
         logger.warning(
             "Snapchat issued a new refresh_token - update SNAPCHAT_REFRESH_TOKEN "
