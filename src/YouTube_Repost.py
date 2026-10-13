@@ -17,10 +17,12 @@ meta-analytics' own Data API usage on the same project.
 """
 
 import logging
+import time
 import unicodedata
 
 import requests
 
+from Snapchat_Repost import redact_tokens
 from config import (
     Secrets,
     YOUTUBE_PRIVACY_STATUS,
@@ -38,10 +40,16 @@ TITLE_MAX = 100
 DESCRIPTION_MAX_BYTES = 5000
 DEFAULT_TITLE = "433"
 
-# Same reasoning as Snapchat_Repost.SNAP_TIMEOUT: connect fails fast, the
-# upload itself can take a while for a large video.
+# Same reasoning as Snapchat_Repost.SNAP_TIMEOUT: connect fails fast.
 YT_TIMEOUT = (10, 60)
-YT_UPLOAD_TIMEOUT = (10, 600)
+# Per upload chunk. requests/urllib3 applies the *connect* timeout to each
+# socket write while sending the body (the read timeout only starts once the
+# body is sent), so a 10s connect timeout made a whole-file PUT fail with
+# "The write operation timed out" whenever the upstream link stalled >10s.
+YT_CHUNK_TIMEOUT = (30, 120)
+# Must be a multiple of 256 KiB (resumable upload protocol requirement).
+UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+UPLOAD_MAX_RETRIES = 5
 
 
 def get_youtube_access_token() -> str:
@@ -96,13 +104,78 @@ def short_description(caption: str | None) -> str:
     return encoded[:DESCRIPTION_MAX_BYTES].decode("utf-8", errors="ignore")
 
 
+def _next_offset(r: requests.Response) -> int:
+    """First byte YouTube still needs, from a 308's Range header
+    ("bytes=0-<last received>"); no header means nothing was stored yet."""
+    received = r.headers.get("Range")
+    return int(received.rsplit("-", 1)[1]) + 1 if received else 0
+
+
+def _upload_status(upload_url: str, access_token: str, total: int) -> tuple[int, dict | None]:
+    """Asks YouTube how far the upload got. Returns (next byte offset, the
+    video resource if the upload had in fact already completed, else None)."""
+    r = requests.put(
+        upload_url,
+        headers={"Authorization": f"Bearer {access_token}", "Content-Range": f"bytes */{total}"},
+        timeout=YT_TIMEOUT,
+    )
+    if r.status_code in (200, 201):
+        return total, r.json()
+    if r.status_code == 308:
+        return _next_offset(r), None
+    raise RuntimeError(f"YouTube upload status check failed ({r.status_code}): {r.text}")
+
+
+def _upload_chunks(upload_url: str, access_token: str, video: bytes) -> dict:
+    """Sends the video in chunks, resuming from wherever YouTube says it got
+    to after a dropped connection, timeout or 5xx (up to UPLOAD_MAX_RETRIES
+    in a row). Safe against duplicates: if the last chunk did arrive and only
+    the response got lost, the status check returns the finished video
+    instead of starting over. Returns the video resource."""
+    total = len(video)
+    offset = failures = 0
+    while True:
+        try:
+            if failures:
+                offset, done = _upload_status(upload_url, access_token, total)
+                if done is not None:
+                    return done
+            end = min(offset + UPLOAD_CHUNK_SIZE, total)
+            r = requests.put(
+                upload_url,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "video/mp4",
+                    "Content-Range": f"bytes {offset}-{end - 1}/{total}",
+                },
+                data=video[offset:end],
+                timeout=YT_CHUNK_TIMEOUT,
+            )
+            if r.status_code in (200, 201):
+                return r.json()
+            if r.status_code == 308:
+                offset, failures = _next_offset(r), 0
+                continue
+            if r.status_code < 500:
+                raise RuntimeError(f"YouTube upload failed ({r.status_code}): {r.text}")
+            error = f"{r.status_code}: {r.text[:200]}"
+        except (requests.ConnectionError, requests.Timeout) as e:
+            error = redact_tokens(str(e))
+
+        failures += 1
+        if failures > UPLOAD_MAX_RETRIES:
+            raise RuntimeError(
+                f"YouTube upload kept failing after {UPLOAD_MAX_RETRIES} retries ({error}). "
+                f"It most likely didn't go live - check YouTube Studio if unsure, then try again."
+            )
+        logger.warning(f"YouTube upload interrupted ({error}), resuming ({failures}/{UPLOAD_MAX_RETRIES})...")
+        time.sleep(min(2 ** failures, 30))
+
+
 def upload_short(access_token: str, video: bytes, caption: str | None) -> str:
     """Resumable upload: one call to open the upload session with the
-    metadata, one PUT with the bytes. Returns the YouTube video id.
-
-    A timeout on the PUT is deliberately not retried, same as Snapchat's
-    publish call: YouTube may have received the whole video and only the
-    response got lost, so a blind retry risks a duplicate Short."""
+    metadata, then the bytes in UPLOAD_CHUNK_SIZE chunks (_upload_chunks).
+    Returns the YouTube video id."""
     metadata = {
         "snippet": {
             "title": short_title(caption),
@@ -133,24 +206,7 @@ def upload_short(access_token: str, video: bytes, caption: str | None) -> str:
                 "pick the 433 channel when Google asks which account/channel to use."
             )
         raise RuntimeError(f"YouTube upload init failed ({r.status_code}): {r.text}")
-    upload_url = r.headers["Location"]
-
-    try:
-        r = requests.put(
-            upload_url,
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "video/mp4"},
-            data=video,
-            timeout=YT_UPLOAD_TIMEOUT,
-        )
-    except requests.Timeout as e:
-        raise RuntimeError(
-            f"YouTube didn't respond in time during upload - it may still have gone live, "
-            f"check YouTube Studio before posting again: {e}"
-        ) from e
-    if not r.ok:
-        raise RuntimeError(f"YouTube upload failed ({r.status_code}): {r.text}")
-
-    body = r.json()
+    body = _upload_chunks(r.headers["Location"], access_token, video)
     status = body.get("status", {})
     if status.get("privacyStatus") != YOUTUBE_PRIVACY_STATUS:
         logger.warning(
