@@ -3,7 +3,8 @@ render_posts_grid_page in publish_helpers.py for the shared implementation
 also used by posts_publisher.py (the Story variant, which browses all post
 types, not just reels). video_only=True both filters the DB query to
 VIDEO/REEL and hides any non-video card as a safety net - Spotlight has no
-multi-slide concept and is video-only."""
+multi-slide concept and is video-only. youtube=True adds a second button per
+reel that uploads it to YouTube as a Short (see publish_youtube_item)."""
 
 import streamlit as st
 
@@ -17,8 +18,8 @@ LOOKBACK_DAYS = 90
 username = st.session_state["username"]
 
 render_posts_grid_page(
-    title="Posts publisher - Spotlight",
-    subtitle="Browse Instagram reels and push them to Snapchat Spotlight.",
+    title="Posts publisher - Reel",
+    subtitle="Browse Instagram reels and push them to Snapchat Spotlight and/or YouTube Shorts.",
     source="manual_db_posts",
     destination="spotlight",
     username=username,
@@ -29,4 +30,5 @@ render_posts_grid_page(
     video_only=True,
     total=None,
     lookback_days=LOOKBACK_DAYS,
+    youtube=True,
 )

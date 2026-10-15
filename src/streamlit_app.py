@@ -80,7 +80,8 @@ st.markdown(
         text-align: center !important;
     }
     /* Posts publisher's per-card action button(s): "Push cover slide" +
-    "Push all slides" (carousels), or a single "Push"/"Push Reel" otherwise.
+    "Push all slides" (carousels), "Snapchat" + "YouTube" side by side and
+    "Push Both" below (reels on the Spotlight page), or a single "Push"/"Push Reel" otherwise.
     Same size/centering for all of them; push_ additionally gets a
     margin-top - not a spacer element, st.container(height=..) enforces its
     own minimum height and threw off precise alignment - so a lone button
@@ -88,7 +89,10 @@ st.markdown(
     row. */
     [class*="st-key-post_db_cover_"],
     [class*="st-key-post_db_all_"],
-    [class*="st-key-post_db_push_"] {
+    [class*="st-key-post_db_push_"],
+    [class*="st-key-post_db_spot_"],
+    [class*="st-key-post_db_both_"],
+    [class*="st-key-post_db_yt_"] {
         width: 100% !important;
     }
     [class*="st-key-post_db_push_"] {
@@ -98,7 +102,10 @@ st.markdown(
     }
     [class*="st-key-post_db_cover_"] button,
     [class*="st-key-post_db_all_"] button,
-    [class*="st-key-post_db_push_"] button {
+    [class*="st-key-post_db_push_"] button,
+    [class*="st-key-post_db_spot_"] button,
+    [class*="st-key-post_db_both_"] button,
+    [class*="st-key-post_db_yt_"] button {
         min-height: 38px !important;
         width: 100% !important;
         box-sizing: border-box !important;
@@ -127,6 +134,32 @@ st.markdown(
         flex: 0 0 348px !important;
         align-self: flex-start !important;
     }
+    /* Spotlight page: Snapchat + YouTube side by side (fixed-height row so
+    a check in place of a button keeps the row the same height), "Push Both"
+    full-width below. Each half splits the row evenly; the buttons drop the
+    icon and side padding to fit "Snapchat" in half a 170px card. */
+    [class*="st-key-post_db_duo_"] {
+        height: 38px !important;
+        flex: 0 0 38px !important;
+        width: 100% !important;
+        flex-wrap: nowrap !important;
+    }
+    [class*="st-key-post_db_half_"] {
+        flex: 1 1 0 !important;
+        min-width: 0 !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Keeps the "✓ YouTube" check on one line instead of the icon wrapping
+    above the text. */
+    [class*="st-key-post_db_half_"] p {
+        white-space: nowrap !important;
+    }
+    [class*="st-key-post_db_spot_"] button,
+    [class*="st-key-post_db_yt_"] button {
+        padding-left: 4px !important;
+        padding-right: 4px !important;
+    }
     [class*="st-key-db_card_story_db_"] {
         height: 290px !important;
         flex: 0 0 290px !important;
@@ -141,11 +174,12 @@ st.session_state["username"] = require_login()
 
 page = st.navigation(
     [
+        # First in the list = the page the app opens on.
+        st.Page("app_pages/posts_publisher_spotlight.py", title="Posts publisher - Reel", icon=":material/bolt:"),
         st.Page("app_pages/posts_publisher.py", title="Posts publisher - Story", icon=":material/grid_view:"),
-        st.Page("app_pages/posts_publisher_spotlight.py", title="Posts publisher - Spotlight", icon=":material/bolt:"),
         st.Page("app_pages/stories_publisher.py", title="Stories publisher", icon=":material/database:"),
         st.Page("app_pages/story_publisher.py", title="Story Publisher - By Url", icon=":material/history:"),
-        st.Page("app_pages/spotlight_publisher.py", title="Spotlight Publisher - By Url", icon=":material/bolt:"),
+        st.Page("app_pages/spotlight_publisher.py", title="Reel Publisher - By Url", icon=":material/bolt:"),
     ],
     position="top",
 )

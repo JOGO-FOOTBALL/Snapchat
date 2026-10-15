@@ -18,7 +18,7 @@ Snapchat_Repost.py) - a Reel that isn't postable yet just gets picked up again
 on a later run within the window, instead of being skipped forever.
 
 State (which Instagram post_ids have been published/given up on) is tracked in
-the snapchat.publish_log Postgres table (source='auto_reels'), shared with the
+the crosspost.publish_log Postgres table (source='auto_reels'), shared with the
 Streamlit publisher pages to prevent cross-flow duplicates.
 
 Usage:
@@ -33,7 +33,7 @@ from datetime import datetime, timedelta, timezone
 
 from config import ACCOUNT_CHANNEL
 from db import get_connection
-from publish_helpers import AlreadyPublishedError, publish_lock
+from publish_helpers import PLATFORM_BY_DESTINATION, AlreadyPublishedError, publish_lock
 from Snapchat_Repost import (
     FIELDS,
     LIMIT,
@@ -71,9 +71,9 @@ def load_state() -> dict:
             cur.execute(
                 """
                 SELECT ig_content_id, status, permalink, channel, published_by,
-                       snapchat_media_id, posted_at, first_seen_at, attempts,
+                       external_media_id, posted_at, first_seen_at, attempts,
                        last_attempt_at, error
-                FROM snapchat.publish_log
+                FROM crosspost.publish_log
                 WHERE source = %s AND destination = %s
                 """,
                 (SOURCE, DESTINATION),
@@ -84,7 +84,7 @@ def load_state() -> dict:
 
 
 def save_entry(ig_content_id: str, *, status: str, permalink: str | None = None,
-               channel: str | None = None, snapchat_media_id: str | None = None,
+               channel: str | None = None, external_media_id: str | None = None,
                posted_at: datetime | None = None, first_seen_at: datetime | None = None,
                attempts: int = 0, last_attempt_at: datetime | None = None,
                error: str | None = None) -> None:
@@ -93,23 +93,23 @@ def save_entry(ig_content_id: str, *, status: str, permalink: str | None = None,
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO snapchat.publish_log
-                    (ig_content_id, source, destination, status, permalink, channel,
-                     snapchat_media_id, posted_at, first_seen_at, attempts,
+                INSERT INTO crosspost.publish_log
+                    (ig_content_id, source, destination, platform, status, permalink, channel,
+                     external_media_id, posted_at, first_seen_at, attempts,
                      last_attempt_at, error)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (ig_content_id, destination, source) DO UPDATE SET
                     status = EXCLUDED.status,
-                    snapchat_media_id = COALESCE(EXCLUDED.snapchat_media_id, snapchat.publish_log.snapchat_media_id),
-                    posted_at = COALESCE(EXCLUDED.posted_at, snapchat.publish_log.posted_at),
-                    first_seen_at = COALESCE(EXCLUDED.first_seen_at, snapchat.publish_log.first_seen_at),
+                    external_media_id = COALESCE(EXCLUDED.external_media_id, crosspost.publish_log.external_media_id),
+                    posted_at = COALESCE(EXCLUDED.posted_at, crosspost.publish_log.posted_at),
+                    first_seen_at = COALESCE(EXCLUDED.first_seen_at, crosspost.publish_log.first_seen_at),
                     attempts = EXCLUDED.attempts,
                     last_attempt_at = EXCLUDED.last_attempt_at,
                     error = EXCLUDED.error,
                     updated_at = now()
                 """,
-                (ig_content_id, SOURCE, DESTINATION, status, permalink, channel,
-                 snapchat_media_id, posted_at, first_seen_at, attempts,
+                (ig_content_id, SOURCE, DESTINATION, PLATFORM_BY_DESTINATION[DESTINATION], status, permalink, channel,
+                 external_media_id, posted_at, first_seen_at, attempts,
                  last_attempt_at, error),
             )
             conn.commit()
@@ -213,7 +213,7 @@ def run(lookback_minutes: int, give_up_after_hours: int, dry_run: bool) -> None:
                 media_id = _publish_reel(access_token, post)
                 logger.info(f"Published {post_id} -> spotlight media_id={media_id}")
                 save_entry(post_id, status="posted", permalink=item.get("permalink"),
-                           channel=item["_channel"], snapchat_media_id=media_id,
+                           channel=item["_channel"], external_media_id=media_id,
                            posted_at=now, first_seen_at=first_seen,
                            attempts=attempts, last_attempt_at=now)
         except AlreadyPublishedError as e:

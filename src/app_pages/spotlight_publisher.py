@@ -1,6 +1,7 @@
 """Paste Instagram permalinks, preview them, and publish the video slides to
 Snapchat Spotlight - same flow as test_reel_publish.ipynb's Spotlight step.
-Spotlight is video-only, so image slides (and image-only posts) are skipped."""
+Spotlight is video-only, so image slides (and image-only posts) are skipped.
+youtube=True adds YouTube / Push Both buttons (see publish_youtube_slides)."""
 
 import streamlit as st
 
@@ -12,8 +13,8 @@ SPOTLIGHT_LOCALE = "en_US"
 username = st.session_state["username"]
 
 render_publisher_page(
-    title="Spotlight Publisher - By Url",
-    subtitle="Post Instagram posts to Snapchat Spotlight.",
+    title="Reel Publisher - By Url",
+    subtitle="Post Instagram posts to Snapchat Spotlight and/or YouTube Shorts.",
     session_key="spotlight_found",
     source="manual_url",
     destination="spotlight",
@@ -24,4 +25,5 @@ render_publisher_page(
     ),
     video_only=True,
     video_only_notice="{skipped} image slide(s) skipped - Spotlight is video-only.",
+    youtube=True,
 )

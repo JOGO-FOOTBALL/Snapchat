@@ -4,3 +4,9 @@ primaryColor = "#E5FF00"
 backgroundColor = "#0D0D0D"
 secondaryBackgroundColor = "#1A1A1A"
 textColor = "#FFFFFF"
+
+[client]
+# Uncaught exceptions show only a generic error in the browser, not the
+# message/traceback (which can contain request URLs etc.); full details
+# still go to the server log.
+showErrorDetails = "none"

@@ -66,6 +66,17 @@ class Secrets:
         "DatascienceAzureBlobStorageAccountKey"
     ).value
 
+    # YouTube OAuth client - the same (Internal Workspace) Google Cloud app
+    # meta-analytics uses for YouTube Analytics. Its refresh token there only
+    # has the yt-analytics.readonly scope, so uploads use their own refresh
+    # token (YOUTUBE_UPLOAD_REFRESH_TOKEN below).
+    YOUTUBE_OAUTH_CLIENT_ID = secret_client.get_secret(
+        "SocialsAnalyticsYoutubeOauthClientId"
+    ).value
+    YOUTUBE_OAUTH_CLIENT_SECRET = secret_client.get_secret(
+        "SocialsAnalyticsYoutubeOauthClientSecret"
+    ).value
+
 
 # Owned Instagram accounts (kept for reference / channel labels)
 ACCOUNT_CHANNEL = {
@@ -96,6 +107,21 @@ SNAPCHAT_OAUTH_SCOPES = "snapchat-marketing-api snapchat-profile-api"
 SNAPCHAT_REFRESH_TOKEN = os.environ["SNAPCHAT_REFRESH_TOKEN"]
 SNAPCHAT_PROFILE_ID = os.environ["SNAPCHAT_PROFILE_ID"]
 SNAPCHAT_TOKEN_URL = "https://accounts.snapchat.com/login/oauth2/access_token"
+# Public link to 433's profile (snap_user_name of SNAPCHAT_PROFILE_ID, from
+# GET /v1/public_profiles/{id}). The publish responses we store carry no
+# public per-Snap link, so the "on Snapchat" checks link here instead.
+SNAPCHAT_PROFILE_URL = "https://www.snapchat.com/add/official_433"
+
+# YouTube Shorts (Data API v3 upload, OAuth). Refresh token for 433's channel
+# with the youtube.upload scope - get one with
+# `python auth_config/youtube_refresh_token.py`. Optional: without it the app
+# still starts, only the YouTube buttons fail. Until the Google Cloud project
+# passes YouTube's API audit, uploads are forced to private regardless of
+# YOUTUBE_PRIVACY_STATUS.
+YOUTUBE_UPLOAD_REFRESH_TOKEN = os.getenv("YOUTUBE_UPLOAD_REFRESH_TOKEN")
+YOUTUBE_UPLOAD_SCOPES = "https://www.googleapis.com/auth/youtube.upload"
+YOUTUBE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+YOUTUBE_PRIVACY_STATUS = os.getenv("YOUTUBE_PRIVACY_STATUS", "public")
 
 # streamlit-authenticator config (usernames, bcrypt-hashed passwords, cookie
 # settings) for streamlit_app.py, stored as a single YAML blob in Azure Blob
