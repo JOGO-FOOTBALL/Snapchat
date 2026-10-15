@@ -84,7 +84,7 @@ def load_log(destination: str) -> dict:
                        p.ig_content_id, p.status, p.source, p.permalink, p.published_by,
                        p.external_media_id, p.external_request_id, p.posted_at,
                        (SELECT COUNT(*) FROM crosspost.publish_log_items s
-                        WHERE s.publish_log_id = p.id) AS snap_count
+                        WHERE s.publish_log_id = p.id) AS item_count
                 FROM crosspost.publish_log p
                 WHERE p.destination = %s
                 ORDER BY p.ig_content_id,
@@ -108,9 +108,9 @@ def save_log_entry(
     external_request_id: str | None = None,
     posted_at: datetime | None = None,
     error: str | None = None,
-    snaps: list[dict] | None = None,
+    items: list[dict] | None = None,
 ) -> None:
-    """Upsert one publish log entry (and optional child snap rows)."""
+    """Upsert one publish log entry (and optional child item rows)."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -135,19 +135,19 @@ def save_log_entry(
             )
             log_id = cur.fetchone()["id"]
 
-            if snaps:
+            if items:
                 cur.execute(
                     "DELETE FROM crosspost.publish_log_items WHERE publish_log_id = %s",
                     (log_id,),
                 )
-                for idx, snap in enumerate(snaps, start=1):
+                for idx, item in enumerate(items, start=1):
                     cur.execute(
                         """
                         INSERT INTO crosspost.publish_log_items
                             (publish_log_id, item_index, external_media_id, external_request_id)
                         VALUES (%s, %s, %s, %s)
                         """,
-                        (log_id, idx, snap["media_id"], snap.get("request_id")),
+                        (log_id, idx, item["media_id"], item.get("request_id")),
                     )
             conn.commit()
     finally:
@@ -267,7 +267,7 @@ def publish_slides(
             permalink=permalink,
             published_by=username,
             posted_at=now,
-            snaps=posted,
+            items=posted,
         )
 
     return {
@@ -305,7 +305,7 @@ def publish_youtube_slides(
             published_by=username,
             external_media_id=uploaded[0]["media_id"],
             posted_at=now,
-            snaps=uploaded,
+            items=uploaded,
         )
     return {"status": "posted", "posted_at": now.isoformat(), "published_by": username, "videos": uploaded}
 
@@ -408,7 +408,7 @@ def render_publisher_page(
                 by = already.get("published_by")
                 suffix = f" by {by}" if by else ""
                 where = " to Snapchat" if youtube else ""
-                st.success(f"Already posted{where} on {already['posted_at']}{suffix} · {already['snap_count']} snap(s)")
+                st.success(f"Already posted{where} on {already['posted_at']}{suffix} · {already['item_count']} snap(s)")
             if on_youtube:
                 by = yt_already.get("published_by")
                 suffix = f" by {by}" if by else ""
