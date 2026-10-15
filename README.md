@@ -76,8 +76,8 @@ The Reel posts grid (and the Reel Publisher - By Url page) can also upload a ree
 a Short (`src/YouTube_Repost.py`, YouTube Data API v3 resumable upload). It
 uploads the same letterboxed 1080x1920 mp4 Spotlight gets; title = first
 caption line (max 100 chars), description = full caption. Logged
-in `snapchat.publish_log` with `destination='youtube'` (video id in
-`snapchat_media_id`), independent of the Spotlight status.
+in `crosspost.publish_log` with `destination='youtube'` (video id in
+`external_media_id`), independent of the Spotlight status.
 
 - Auth reuses meta-analytics' Google Cloud OAuth client (Key Vault
   `SocialsAnalyticsYoutubeOauthClientId/Secret`) with its own refresh token

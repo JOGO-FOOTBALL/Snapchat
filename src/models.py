@@ -10,11 +10,12 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
-    metadata = MetaData(schema="snapchat")
+    metadata = MetaData(schema="crosspost")
 
 
 class PublishLog(Base):
@@ -31,13 +32,15 @@ class PublishLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     ig_content_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     destination: Mapped[str] = mapped_column(String, nullable=False)
+    platform: Mapped[str] = mapped_column(String, nullable=False, index=True)
     source: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
     permalink: Mapped[str | None] = mapped_column(String)
     channel: Mapped[str | None] = mapped_column(String)
     published_by: Mapped[str | None] = mapped_column(String)
-    snapchat_media_id: Mapped[str | None] = mapped_column(String)
-    snapchat_request_id: Mapped[str | None] = mapped_column(String)
+    external_media_id: Mapped[str | None] = mapped_column(String)
+    external_request_id: Mapped[str | None] = mapped_column(String)
+    extra: Mapped[dict | None] = mapped_column(JSONB)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -50,20 +53,20 @@ class PublishLog(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    snaps: Mapped[list["PublishLogSnap"]] = relationship(
+    items: Mapped[list["PublishLogItem"]] = relationship(
         back_populates="publish_log", cascade="all, delete-orphan"
     )
 
 
-class PublishLogSnap(Base):
-    __tablename__ = "publish_log_snaps"
+class PublishLogItem(Base):
+    __tablename__ = "publish_log_items"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     publish_log_id: Mapped[int] = mapped_column(
-        ForeignKey("snapchat.publish_log.id"), nullable=False
+        ForeignKey("crosspost.publish_log.id"), nullable=False
     )
-    snap_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    snapchat_media_id: Mapped[str] = mapped_column(String, nullable=False)
-    snapchat_request_id: Mapped[str | None] = mapped_column(String)
+    item_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    external_media_id: Mapped[str] = mapped_column(String, nullable=False)
+    external_request_id: Mapped[str | None] = mapped_column(String)
 
-    publish_log: Mapped["PublishLog"] = relationship(back_populates="snaps")
+    publish_log: Mapped["PublishLog"] = relationship(back_populates="items")

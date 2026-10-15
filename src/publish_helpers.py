@@ -35,6 +35,9 @@ from YouTube_Repost import YOUTUBE_WATCH_URL, get_youtube_access_token, upload_s
 
 YOUTUBE_DESTINATION = "youtube"
 
+# Platform each destination belongs to (crosspost.publish_log.platform).
+PLATFORM_BY_DESTINATION = {"story": "snapchat", "spotlight": "snapchat", YOUTUBE_DESTINATION: "youtube"}
+
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "Logo433.png"
 
 # Default channel for the Posts/Stories publisher pages' channel filter below
@@ -79,10 +82,10 @@ def load_log(destination: str) -> dict:
                 """
                 SELECT DISTINCT ON (p.ig_content_id)
                        p.ig_content_id, p.status, p.source, p.permalink, p.published_by,
-                       p.snapchat_media_id, p.snapchat_request_id, p.posted_at,
-                       (SELECT COUNT(*) FROM snapchat.publish_log_snaps s
+                       p.external_media_id, p.external_request_id, p.posted_at,
+                       (SELECT COUNT(*) FROM crosspost.publish_log_items s
                         WHERE s.publish_log_id = p.id) AS snap_count
-                FROM snapchat.publish_log p
+                FROM crosspost.publish_log p
                 WHERE p.destination = %s
                 ORDER BY p.ig_content_id,
                          CASE WHEN p.status = 'posted' THEN 0 ELSE 1 END,
@@ -101,8 +104,8 @@ def save_log_entry(
     permalink: str | None = None,
     channel: str | None = None,
     published_by: str | None = None,
-    snapchat_media_id: str | None = None,
-    snapchat_request_id: str | None = None,
+    external_media_id: str | None = None,
+    external_request_id: str | None = None,
     posted_at: datetime | None = None,
     error: str | None = None,
     snaps: list[dict] | None = None,
@@ -113,35 +116,35 @@ def save_log_entry(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO snapchat.publish_log
-                    (ig_content_id, source, destination, status, permalink, channel,
-                     published_by, snapchat_media_id, snapchat_request_id, posted_at, error, attempts)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                INSERT INTO crosspost.publish_log
+                    (ig_content_id, source, destination, platform, status, permalink, channel,
+                     published_by, external_media_id, external_request_id, posted_at, error, attempts)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
                 ON CONFLICT (ig_content_id, destination, source) DO UPDATE SET
                     status = EXCLUDED.status,
-                    published_by = COALESCE(EXCLUDED.published_by, snapchat.publish_log.published_by),
-                    snapchat_media_id = COALESCE(EXCLUDED.snapchat_media_id, snapchat.publish_log.snapchat_media_id),
-                    snapchat_request_id = COALESCE(EXCLUDED.snapchat_request_id, snapchat.publish_log.snapchat_request_id),
-                    posted_at = COALESCE(EXCLUDED.posted_at, snapchat.publish_log.posted_at),
+                    published_by = COALESCE(EXCLUDED.published_by, crosspost.publish_log.published_by),
+                    external_media_id = COALESCE(EXCLUDED.external_media_id, crosspost.publish_log.external_media_id),
+                    external_request_id = COALESCE(EXCLUDED.external_request_id, crosspost.publish_log.external_request_id),
+                    posted_at = COALESCE(EXCLUDED.posted_at, crosspost.publish_log.posted_at),
                     error = EXCLUDED.error,
                     updated_at = now()
                 RETURNING id
                 """,
-                (ig_content_id, source, destination, status, permalink, channel,
-                 published_by, snapchat_media_id, snapchat_request_id, posted_at, error),
+                (ig_content_id, source, destination, PLATFORM_BY_DESTINATION[destination],
+                 status, permalink, channel, published_by, external_media_id, external_request_id, posted_at, error),
             )
             log_id = cur.fetchone()["id"]
 
             if snaps:
                 cur.execute(
-                    "DELETE FROM snapchat.publish_log_snaps WHERE publish_log_id = %s",
+                    "DELETE FROM crosspost.publish_log_items WHERE publish_log_id = %s",
                     (log_id,),
                 )
                 for idx, snap in enumerate(snaps, start=1):
                     cur.execute(
                         """
-                        INSERT INTO snapchat.publish_log_snaps
-                            (publish_log_id, snap_index, snapchat_media_id, snapchat_request_id)
+                        INSERT INTO crosspost.publish_log_items
+                            (publish_log_id, item_index, external_media_id, external_request_id)
                         VALUES (%s, %s, %s, %s)
                         """,
                         (log_id, idx, snap["media_id"], snap.get("request_id")),
@@ -180,7 +183,7 @@ def publish_lock(ig_content_id: str, destination: str):
                 )
             cur.execute(
                 """
-                SELECT source FROM snapchat.publish_log
+                SELECT source FROM crosspost.publish_log
                 WHERE ig_content_id = %s AND destination = %s AND status = 'posted'
                 LIMIT 1
                 """,
@@ -300,7 +303,7 @@ def publish_youtube_slides(
             status="posted",
             permalink=permalink,
             published_by=username,
-            snapchat_media_id=uploaded[0]["media_id"],
+            external_media_id=uploaded[0]["media_id"],
             posted_at=now,
             snaps=uploaded,
         )
@@ -409,7 +412,7 @@ def render_publisher_page(
             if on_youtube:
                 by = yt_already.get("published_by")
                 suffix = f" by {by}" if by else ""
-                url = YOUTUBE_WATCH_URL.format(video_id=yt_already["snapchat_media_id"])
+                url = YOUTUBE_WATCH_URL.format(video_id=yt_already["external_media_id"])
                 st.success(f"Already posted to YouTube on {yt_already['posted_at']}{suffix} · [watch]({url})")
             if on_dest and (on_youtube or not youtube):
                 continue
@@ -543,8 +546,8 @@ def publish_db_item(
             status="posted",
             permalink=item.get("permalink"),
             published_by=username,
-            snapchat_media_id=media["media_id"],
-            snapchat_request_id=result.get("request_id"),
+            external_media_id=media["media_id"],
+            external_request_id=result.get("request_id"),
             posted_at=now,
         )
 
@@ -561,8 +564,8 @@ def publish_youtube_item(item: dict, username: str, source: str) -> dict:
     """Uploads one DB-sourced video item to YouTube as a Short - the same
     letterboxed 9:16 mp4 Spotlight gets (process_slide is cached, so this
     reuses the Spotlight push's processing when both buttons are used).
-    Logged in snapchat.publish_log under destination 'youtube', with the
-    YouTube video id in snapchat_media_id (the table predates YouTube).
+    Logged in crosspost.publish_log under destination 'youtube', with the
+    YouTube video id in external_media_id.
     Raises AlreadyPublishedError if already posted."""
     content_id = str(item["id"])
     with publish_lock(content_id, YOUTUBE_DESTINATION):
@@ -576,7 +579,7 @@ def publish_youtube_item(item: dict, username: str, source: str) -> dict:
             status="posted",
             permalink=item.get("permalink"),
             published_by=username,
-            snapchat_media_id=video_id,
+            external_media_id=video_id,
             posted_at=now,
         )
 
@@ -731,7 +734,7 @@ def render_posts_grid_page(
                     spot_clicked = st.button("Snapchat", key=f"{name_prefix}_spot_{item_key}")
             with st.container(key=f"{name_prefix}_half_yt_{item_key}"):
                 if on_youtube:
-                    url = YOUTUBE_WATCH_URL.format(video_id=yt_already["snapchat_media_id"])
+                    url = YOUTUBE_WATCH_URL.format(video_id=yt_already["external_media_id"])
                     also = f" & [Snapchat]({SNAPCHAT_PROFILE_URL})" if on_spotlight else ""
                     st.caption(f":material/check_circle: [YouTube]({url}){also}")
                 else:

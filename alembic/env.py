@@ -18,7 +18,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-MANAGED_SCHEMAS = {"snapchat"}
+MANAGED_SCHEMAS = {"snapchat", "crosspost"}
 
 
 def include_name(name, type_, parent_names):
